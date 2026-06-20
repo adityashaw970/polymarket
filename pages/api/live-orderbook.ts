@@ -273,9 +273,9 @@ export default async function handler(
   // CORS + caching headers — allow stale-while-revalidate to serve cached
   // responses instantly while a fresh fetch runs in the background
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Cache-Control', 'public, s-maxage=10, stale-while-revalidate=20')
+  res.setHeader('Cache-Control', 'public, s-maxage=1, stale-while-revalidate=5')
 
-  const maxMarkets = Math.min(4, Math.max(1, Number.parseInt((req.query.markets as string) || '3', 10)))
+  const maxMarkets = Math.min(50, Math.max(1, Number.parseInt((req.query.markets as string) || '50', 10)))
 
   // Resolve to an event slug
   const resolved = await resolveToSlug(
@@ -385,8 +385,8 @@ export default async function handler(
         : `Event found but all ${markets.length} market(s) are closed — no live CLOB orderbooks available.`,
     }
 
-    // Cache for 10 seconds — prevents CLOB API hammering during rapid UI polls
-    cache.set(cacheKey, response, 10_000)
+    // Cache for 1 second — prevents CLOB API hammering during rapid UI polls
+    cache.set(cacheKey, response, 1_000)
 
     return res.status(200).json(createSuccessResponse(response))
   } catch (error) {

@@ -1,7 +1,8 @@
 'use client'
 
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { LiveOrderbookResponse } from '../../pages/api/live-orderbook'
+import { TopHoldersResponse } from '../../pages/api/top-holders'
 import { OrderBookAnalytics } from '../types'
 import { APIResponse } from '../types'
 
@@ -506,6 +507,393 @@ function EmptyAnalytics() {
   )
 }
 
+// ── Top Holders Panel ─────────────────────────────────────────────────────────
+interface LiveTokenMeta { tokenId: string; outcomeName: string }
+
+const HOLDERS_PER_PAGE = 15
+const HOLDERS_REFRESH_MS = 60_000  // refresh holders every 60 s — independent of main CLOB refresh
+
+function TopHoldersPanel({
+  conditionId,
+  tokens,
+}: {
+  conditionId: string
+  tokens: LiveTokenMeta[]
+}) {
+  const [data, setData] = useState<TopHoldersResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(true)
+  const [activeTab, setActiveTab] = useState(0)    // index into outcomeGroups
+  const [page, setPage] = useState(0)              // pagination within active tab
+  const [copiedWallet, setCopiedWallet] = useState<string | null>(null)
+
+  // Stable key so useEffect doesn't re-fire on every parent render.
+  // Only changes when conditionId or actual token list changes.
+  const tokensKey = useMemo(
+    () => tokens.map(t => `${t.tokenId}:${t.outcomeName}`).join('|'),
+    [tokens]
+  )
+
+  // Build the API URL once per stable key
+  const apiUrl = useMemo(() => {
+    const tokenIds   = tokens.map(t => t.tokenId).join(',')
+    const outcomeNames = tokens.map(t => t.outcomeName).join(',')
+    return (
+      `/api/top-holders` +
+      `?conditionId=${encodeURIComponent(conditionId)}` +
+      `&limit=50` +
+      (tokenIds    ? `&tokenIds=${encodeURIComponent(tokenIds)}`     : '') +
+      (outcomeNames ? `&outcomes=${encodeURIComponent(outcomeNames)}` : '')
+    )
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conditionId, tokensKey])
+
+  const doFetch = useCallback(() => {
+    setLoading(true)
+    setError(null)
+    fetch(apiUrl)
+      .then(r => r.json())
+      .then((json: APIResponse<TopHoldersResponse>) => {
+        if (json.success && json.data) {
+          setData(json.data)
+        } else {
+          setError(json.error ?? 'Failed to fetch holders')
+        }
+      })
+      .catch(() => setError('Network error'))
+      .finally(() => setLoading(false))
+  }, [apiUrl])
+
+  // Initial fetch + periodic refresh (independent of CLOB refresh)
+  useEffect(() => {
+    if (!conditionId) return
+    setActiveTab(0)
+    setPage(0)
+    doFetch()
+    const timer = setInterval(doFetch, HOLDERS_REFRESH_MS)
+    return () => clearInterval(timer)
+  }, [conditionId, tokensKey, doFetch])
+
+  // Reset pagination when tab changes
+  useEffect(() => { setPage(0) }, [activeTab])
+
+  const pnlColor = (pnl: number) =>
+    pnl > 0 ? 'text-emerald-400' : pnl < 0 ? 'text-rose-400' : 'text-slate-400'
+
+  const fmtShares = (n: number) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+    return n.toFixed(1)
+  }
+
+  const fmtPrice = (n: number) => n > 0 ? `${(n * 100).toFixed(1)}¢` : '—'
+
+  const fmtPnl = (n: number) => {
+    const sign = n >= 0 ? '+' : ''
+    if (Math.abs(n) >= 1_000) return `${sign}$${(n / 1_000).toFixed(1)}K`
+    return `${sign}$${n.toFixed(2)}`
+  }
+
+  // Format joined date as relative (e.g. "Nov 2024") or fallback to "—"
+  const fmtJoined = (ms: number) => {
+    if (!ms || ms <= 0) return '—'
+    return new Date(ms).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+  }
+
+  // Format predictions count: 252,585 → "252K"
+  const fmtPredictions = (n: number) => {
+    if (!n || n <= 0) return '—'
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+    return String(n)
+  }
+
+  const copyWallet = (wallet: string) => {
+    navigator.clipboard.writeText(wallet).catch(() => {})
+    setCopiedWallet(wallet)
+    setTimeout(() => setCopiedWallet(null), 1500)
+  }
+
+  const currentGroup = data?.outcomeGroups?.[activeTab] ?? null
+  const totalUsers = data?.outcomeGroups?.reduce((s, g) => s + g.holders.length, 0) ?? 0
+
+  // Pagination
+  const allHolders  = currentGroup?.holders ?? []
+  const totalPages  = Math.max(1, Math.ceil(allHolders.length / HOLDERS_PER_PAGE))
+  const pageHolders = allHolders.slice(page * HOLDERS_PER_PAGE, (page + 1) * HOLDERS_PER_PAGE)
+
+  return (
+    <div className="rounded-xl border border-violet-400/15 bg-violet-500/3 overflow-hidden">
+      {/* Header */}
+      <button
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/3 transition"
+        onClick={() => setExpanded(p => !p)}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-base">👑</span>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-300">
+            Top Share Holders
+          </span>
+          {data && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-400 font-mono">
+              {totalUsers} users
+            </span>
+          )}
+          {loading && (
+            <span className="text-[9px] text-slate-600 animate-pulse">updating…</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {data && (
+            <span className="text-[9px] text-slate-700">
+              ↻ {new Date(data.fetchedAt).toLocaleTimeString()}
+            </span>
+          )}
+          <span className="text-slate-500 text-xs">{expanded ? '▲' : '▼'}</span>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4">
+          {/* Outcome tabs — one tab per outcome (Yes / No / …) */}
+          {data && data.outcomeGroups.length > 1 && (
+            <div className="flex gap-1.5 mb-3 flex-wrap">
+              {data.outcomeGroups.map((g, i) => (
+                <button
+                  key={`${g.outcome}-${i}`}
+                  onClick={() => setActiveTab(i)}
+                  className={`text-[11px] px-3 py-1 rounded-lg border font-semibold transition ${
+                    activeTab === i
+                      ? g.outcome.toLowerCase() === 'yes'
+                        ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+                        : g.outcome.toLowerCase() === 'no'
+                        ? 'border-rose-500/50 bg-rose-500/15 text-rose-300'
+                        : 'border-violet-500/50 bg-violet-500/15 text-violet-300'
+                      : 'border-white/8 bg-white/3 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {g.outcome}
+                  <span className="ml-1 opacity-60 font-mono text-[9px]">({g.holders.length})</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Loading skeleton — only show if no data yet */}
+          {loading && !data && (
+            <div className="space-y-2 animate-pulse">
+              {[1, 2, 3, 4, 5].map(i => (
+                <div key={i} className="h-9 rounded-lg bg-white/4" />
+              ))}
+            </div>
+          )}
+
+          {error && !loading && (
+            <div className="text-xs text-slate-500 italic py-2">
+              ⚠️ Could not load holders: {error}
+            </div>
+          )}
+
+          {!loading && currentGroup && currentGroup.holders.length === 0 && (
+            <div className="text-xs text-slate-500 italic py-2">No holders found for this outcome.</div>
+          )}
+
+          {currentGroup && allHolders.length > 0 && (
+            <div>
+              {/* Column headers */}
+              <div
+                className="grid gap-2 mb-2 px-1"
+                style={{ gridTemplateColumns: '2rem 1fr 6rem 6rem 7rem 6rem 7rem' }}
+              >
+                <span className="text-[9px] uppercase tracking-wider text-slate-600">#</span>
+                <span className="text-[9px] uppercase tracking-wider text-slate-600">User</span>
+                <span className="text-[9px] uppercase tracking-wider text-slate-600 text-right">Shares</span>
+                <span className="text-[9px] uppercase tracking-wider text-slate-600 text-right">Avg Price</span>
+                <span className="text-[9px] uppercase tracking-wider text-slate-600 text-right">Unreal. PnL</span>
+                <span className="text-[9px] uppercase tracking-wider text-violet-400/70 text-right">Predictions</span>
+                <span className="text-[9px] uppercase tracking-wider text-violet-400/70 text-right">Joined</span>
+              </div>
+
+              <div className="space-y-1">
+                {pageHolders.map((holder, i) => {
+                  const globalIdx = page * HOLDERS_PER_PAGE + i
+                  return (
+                    <div
+                      key={holder.proxyWallet}
+                      className={`grid gap-2 items-center px-2 py-2 rounded-lg transition ${
+                        globalIdx === 0
+                          ? 'bg-amber-400/8 border border-amber-400/15'
+                          : globalIdx === 1
+                          ? 'bg-white/4 border border-white/6'
+                          : globalIdx === 2
+                          ? 'bg-white/3 border border-white/5'
+                          : 'bg-white/2 border border-white/3 hover:bg-white/4'
+                      }`}
+                      style={{ gridTemplateColumns: '2rem 1fr 6rem 6rem 7rem 6rem 7rem' }}
+                    >
+                      {/* Rank */}
+                      <span className={`text-[11px] font-black font-mono text-center ${
+                        globalIdx === 0 ? 'text-amber-300' : globalIdx === 1 ? 'text-slate-300' : globalIdx === 2 ? 'text-amber-700' : 'text-slate-600'
+                      }`}>
+                        {globalIdx === 0 ? '🥇' : globalIdx === 1 ? '🥈' : globalIdx === 2 ? '🥉' : `#${globalIdx + 1}`}
+                      </span>
+
+                      {/* User identity */}
+                      <div className="flex items-center gap-2 min-w-0">
+                        {holder.profileImage ? (
+                          <img
+                            src={holder.profileImage}
+                            alt=""
+                            className="w-6 h-6 rounded-full shrink-0 object-cover bg-slate-700"
+                            onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                          />
+                        ) : (
+                          <div className="w-6 h-6 rounded-full shrink-0 bg-linear-to-br from-violet-500/40 to-sky-500/40 flex items-center justify-center">
+                            <span className="text-[9px] font-bold text-white">
+                              {(holder.username || holder.proxyWallet).slice(0, 1).toUpperCase()}
+                            </span>
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5" title={holder.username || holder.proxyWallet}>
+                            <span className="text-[11px] font-semibold text-white truncate">
+                              {holder.username || holder.proxyWallet}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <span
+                              title={holder.proxyWallet}
+                              className="text-[9px] font-mono text-slate-500 break-all select-all"
+                            >
+                              {holder.proxyWallet}
+                            </span>
+                            <button
+                              title="Copy wallet address"
+                              onClick={() => copyWallet(holder.proxyWallet)}
+                              className="shrink-0 text-[8px] px-1 py-0.5 rounded bg-white/5 hover:bg-white/10 text-slate-500 hover:text-sky-300 transition font-mono"
+                            >
+                              {copiedWallet === holder.proxyWallet ? '✓' : '⎘'}
+                            </button>
+                            <a
+                              href={holder.profileUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title="Open on Polymarket"
+                              className="shrink-0 text-[8px] px-1 py-0.5 rounded bg-white/5 hover:bg-violet-500/20 text-slate-500 hover:text-violet-300 transition"
+                              onClick={e => e.stopPropagation()}
+                            >
+                              ↗
+                            </a>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Shares */}
+                      <div className="text-right">
+                        <div className="text-[12px] font-bold font-mono text-sky-300">
+                          {fmtShares(holder.shares)}
+                        </div>
+                        <div className="text-[9px] text-slate-600">shares</div>
+                      </div>
+
+                      {/* Avg buy price */}
+                      <div className="text-right">
+                        <div className="text-[12px] font-bold font-mono text-white">
+                          {fmtPrice(holder.avgBuyPrice)}
+                        </div>
+                        <div className="text-[9px] text-slate-600">
+                          {holder.tradeCount > 0 ? `${holder.tradeCount} trade${holder.tradeCount !== 1 ? 's' : ''}` : 'no trades'}
+                        </div>
+                      </div>
+
+                      {/* Unrealized PnL */}
+                      <div className="text-right">
+                        <div className={`text-[12px] font-bold font-mono ${pnlColor(holder.unrealizedPnl)}`}>
+                          {holder.avgBuyPrice > 0 ? fmtPnl(holder.unrealizedPnl) : '—'}
+                        </div>
+                        {holder.avgBuyPrice > 0 && (
+                          <div className={`text-[9px] ${pnlColor(holder.unrealizedPnl)}`}>
+                            @ {fmtPrice(currentGroup.currentPrice)} now
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Total Predictions */}
+                      <div className="text-right">
+                        <div className="text-[12px] font-bold font-mono text-violet-300">
+                          {fmtPredictions(holder.totalPredictions)}
+                        </div>
+                        <div className="text-[9px] text-slate-600">markets</div>
+                      </div>
+
+                      {/* Joined Date */}
+                      <div className="text-right">
+                        <div
+                          className="text-[12px] font-bold font-mono text-slate-300"
+                          title={
+                            holder.joinedDate > 0
+                              ? `First on-chain activity: ${new Date(holder.joinedDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`
+                              : 'Join date unavailable'
+                          }
+                        >
+                          {holder.joinedDate > 0 ? fmtJoined(holder.joinedDate) : '—'}
+                        </div>
+                        <div className="text-[9px] text-slate-600">joined</div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/5">
+                  <button
+                    onClick={() => setPage(p => Math.max(0, p - 1))}
+                    disabled={page === 0}
+                    className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border border-white/8 bg-white/3 text-slate-400 hover:text-white hover:bg-white/6 disabled:opacity-30 disabled:cursor-not-allowed transition font-medium"
+                  >
+                    ← Prev
+                  </button>
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: totalPages }, (_, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setPage(idx)}
+                        className={`w-6 h-6 rounded text-[9px] font-mono transition ${
+                          idx === page
+                            ? 'bg-violet-500/30 text-violet-300 border border-violet-500/40'
+                            : 'bg-white/3 text-slate-500 hover:bg-white/6 hover:text-white border border-white/5'
+                        }`}
+                      >
+                        {idx + 1}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                    disabled={page === totalPages - 1}
+                    className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border border-white/8 bg-white/3 text-slate-400 hover:text-white hover:bg-white/6 disabled:opacity-30 disabled:cursor-not-allowed transition font-medium"
+                  >
+                    Next →
+                  </button>
+                </div>
+              )}
+
+              <div className="mt-2 text-[9px] text-slate-700 flex justify-between items-center">
+                <span>Showing {page * HOLDERS_PER_PAGE + 1}–{Math.min((page + 1) * HOLDERS_PER_PAGE, allHolders.length)} of {allHolders.length} · {currentGroup.outcome}</span>
+                <span>Avg price = weighted avg of BUY trades · refreshes every 90s</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ── Search bar ────────────────────────────────────────────────────────────────
 interface SearchBarProps {
   value: string
@@ -571,7 +959,7 @@ function RefreshRing({ interval, timeLeft }: { interval: number; timeLeft: numbe
 
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
 
-const REFRESH_INTERVAL = 5 // seconds
+const REFRESH_INTERVAL = 1 // second — main CLOB refresh (orderbook/analytics only)
 const QUICK_SEARCHES = ['Bitcoin', 'Trump', 'NBA Finals', 'US Election', 'Ethereum', 'World Cup', 'AI', 'Fed Rate']
 
 export function OrderbookDashboard() {
@@ -690,15 +1078,15 @@ export function OrderbookDashboard() {
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-200 h-100 rounded-full bg-sky-400/3 blur-3xl" />
       </div>
 
-      <div className="relative max-w-7xl mx-auto px-4 py-8 space-y-6">
+      <div className="relative  mx-auto px-4 py-8 space-y-6">
         {/* Header */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center justify-start gap-4 ">
           <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-2xl">📡</span>
+            <div className="flex items-center justify-between gap-2 mb-1">
               <h1 className="text-xl font-black tracking-tight bg-linear-to-r from-sky-300 via-blue-300 to-violet-300 bg-clip-text text-transparent">
-                Real-Time Orderbook Analytics
+                📡 Real-Time Orderbook Analytics
               </h1>
+              <button onClick={()=>window.location.href=`${window.location.origin}`} className='inline-flex rounded-full border border-red-400/20 bg-red-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-red-300 cursor-pointer'>Main Page</button>
             </div>
             <p className="text-sm text-slate-500">
               Bid/ask imbalance, whale detection, spoofing patterns &amp; 15+ live metrics for any Polymarket event
@@ -898,6 +1286,18 @@ export function OrderbookDashboard() {
               </div>
             )}
 
+            {/* Top Holders — shown for every market with a valid conditionId.
+                 tokens is memoized inside TopHoldersPanel to prevent re-fetch on every CLOB refresh. */}
+            {currentMarket && currentMarket.conditionId && (
+              <div className="space-y-0">
+                <SectionTitle icon="👑">Top Share Holders</SectionTitle>
+                <TopHoldersPanel
+                  conditionId={currentMarket.conditionId}
+                  tokens={(currentMarket.tokens ?? []).map(t => ({ tokenId: t.tokenId, outcomeName: t.outcomeName }))}
+                />
+              </div>
+            )}
+
             {/* Analytics */}
             {currentMarket && (
               <div>
@@ -943,7 +1343,7 @@ export function OrderbookDashboard() {
 
         {/* Footer */}
         <div className="text-center text-[10px] text-slate-700 pb-4">
-          Data from Polymarket CLOB API · Refreshes every {REFRESH_INTERVAL}s · Analytics computed server-side
+          Data from Polymarket CLOB API · Orderbook refreshes every {REFRESH_INTERVAL}s · Holders refresh every 60s · Analytics computed server-side
         </div>
       </div>
     </div>
