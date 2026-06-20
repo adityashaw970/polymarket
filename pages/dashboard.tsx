@@ -1,3 +1,4 @@
+import { Head } from 'next/document';
 import dynamic from 'next/dynamic'
 
 const ScoutDashboard = dynamic(
@@ -6,5 +7,8 @@ const ScoutDashboard = dynamic(
 )
 
 export default function DashboardPage() {
-  return <ScoutDashboard />
+  return (<>
+  
+  <ScoutDashboard />
+  </>);
 }
