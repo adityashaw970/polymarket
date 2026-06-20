@@ -445,7 +445,7 @@ export default async function handler(
         return {
           slug: event.slug,
           title: event.title,
-          description: event.description,
+          description: event.description ?? '',
           active: event.active,
           closed: event.closed,
           volume24hr: event.volume24hr,

@@ -16,6 +16,8 @@ import {
   SmartMoneySignal,
   SmartMoneyTrader,
   SmartMoneyTraderPosition,
+  CLOBPrice,
+  UserPosition,
 } from '../../../../types'
 import { createErrorResponse, createSuccessResponse, batchMap, daysAgo } from '../../../../utils'
 
@@ -248,8 +250,26 @@ export default async function handler(
               joinedAt,
               joinedDaysAgo: daysAgo(joinedAt),
             }
+            const estimatedPositionValue = holder.size * (getHolderOutcomePrice(holder.outcome) || holder.currentPrice)
+            const syntheticPositions: UserPosition[] = [{
+              proxyWallet: holder.proxyWallet,
+              conditionId: market.conditionId || market.id,
+              marketId: market.conditionId || market.id,
+              marketTitle: market.title,
+              outcome: holder.outcome,
+              size: holder.size,
+              avgPrice: holder.averagePrice,
+              price: getHolderOutcomePrice(holder.outcome) || holder.currentPrice,
+              cashPnl: holder.cashPnl,
+              percentPnl: 0,
+              initialValue: holder.size * holder.averagePrice,
+              currentValue: estimatedPositionValue,
+              redeemable: false,
+              mergeable: false,
+              resolveTime: market.endDate,
+            }]
 
-            const score = SmartMoneyScorer.calculateSmartMoneyScore(leaderboardLikeTrader, traderTrades, [])
+            const score = SmartMoneyScorer.calculateSmartMoneyScore(leaderboardLikeTrader, traderTrades, syntheticPositions)
             const buyTrades = traderTrades.filter((trade) => trade.side === 'BUY')
             const sellTrades = traderTrades.filter((trade) => trade.side === 'SELL')
             const averageTradeSize =
@@ -284,11 +304,18 @@ export default async function handler(
         if (market.clobTokenIds && market.clobTokenIds.length > 0) {
           try {
             const tokenId = market.clobTokenIds[0]
-            const [book, marketTrades, priceHistory] = await Promise.all([
+            const [bookRes, tradesRes, pricesRes] = await Promise.allSettled([
               polymarketAPI.getOrderBook(tokenId),
               polymarketAPI.getTrades({ market: market.conditionId || market.id, limit: 200 }),
-              polymarketAPI.getPriceHistory({ tokenId, interval: '1h', fidelity: 10 }),
+              Promise.race([
+                polymarketAPI.getPriceHistory({ tokenId, interval: '1h', fidelity: 10 }),
+                new Promise<CLOBPrice[]>(resolve => setTimeout(() => resolve([]), 3_000)),
+              ]),
             ])
+            if (bookRes.status === 'rejected') throw new Error('book unavailable')
+            const book = bookRes.value
+            const marketTrades = tradesRes.status === 'fulfilled' ? tradesRes.value : []
+            const priceHistory = pricesRes.status === 'fulfilled' ? pricesRes.value : []
 
             const snapshotKey = `ob-snapshot:${tokenId}`
             const previousSnapshot = cache.get<ReturnType<typeof createOrderBookSnapshot>>(snapshotKey)

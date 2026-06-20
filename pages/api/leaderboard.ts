@@ -190,7 +190,7 @@ export default async function handler(
           },
         }
       },
-      15 // Increased from 8 → 15 concurrent workers for faster processing
+      8 // Reduced to 8 concurrent workers to avoid thundering herd rate limits
     )
 
     const filtered = TraderRanker.filterSmartMoneyTraders(smartMoneyTraders, {

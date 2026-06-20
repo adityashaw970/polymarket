@@ -214,45 +214,7 @@ export function getTimestampFromPeriod(period: TimePeriod): number | null {
   return Date.now() - ms;
 }
 
-export function formatNumber(num: number, decimals: number = 2): string {
-  return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  }).format(num);
-}
 
-export function formatCurrency(num: number): string {
-  return '$' + formatNumber(num);
-}
-
-export function formatPercent(num: number): string {
-  return formatNumber(num * 100) + '%';
-}
-
-export function formatDate(timestamp: number): string {
-  return new Date(timestamp).toLocaleDateString('en-US');
-}
-
-export function daysAgo(timestamp: number): number {
-  return Math.floor((Date.now() - timestamp) / (24 * 60 * 60 * 1000));
-}
-
-// ============================================================================
-// DATA VALIDATION
-// ============================================================================
-
-export function isValidWallet(wallet: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(wallet);
-}
-
-export function isValidConditionId(id: string): boolean {
-  return /^0x[a-fA-F0-9]{64}$/.test(id);
-}
-
-export function isValidMarketId(id: string): boolean {
-  // Polymarket market IDs are condition IDs
-  return isValidConditionId(id);
-}
 
 // ============================================================================
 // ERROR MESSAGES

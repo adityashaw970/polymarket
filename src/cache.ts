@@ -102,8 +102,8 @@ export class CacheKeys {
     return `trades:${wallet}:${limit ?? 'all'}:${offset ?? 0}`;
   }
 
-  static traderActivity(wallet: string, limit?: number, offset?: number): string {
-    return `activity:${wallet}:${limit ?? 'all'}:${offset ?? 0}`;
+  static traderActivity(wallet: string): string {
+    return `trader-activity:${wallet}`;
   }
 
   static traderScore(wallet: string): string {

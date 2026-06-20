@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { polymarketAPI } from '../../polymarket-api'
 import { computeOrderBookAnalytics, createOrderBookSnapshot } from '@/orderbook-analytics'
 import { cache, CacheKeys, CACHE_TTL } from '../../cache'
-import { createSuccessResponse, createErrorResponse } from '../../utils'
+import { createSuccessResponse, createErrorResponse, pLimit } from '../../utils'
 import { APIResponse, GammaEvent, OrderBook, OrderBookAnalytics, CLOBPrice } from '../../types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -127,27 +127,7 @@ async function tryFetchBook(tokenId: string): Promise<OrderBook | null> {
   }
 }
 
-/** Analyze a single token — fires book + trades + priceHistory simultaneously
- *  to eliminate the sequential waterfall (book → then trades). */
-// ✅ Concurrency limiter: runs at most `limit` promises at a time
-async function pLimit<T>(
-  tasks: (() => Promise<T>)[],
-  limit: number
-): Promise<T[]> {
-  const results: T[] = new Array(tasks.length)
-  let index = 0
 
-  async function worker() {
-    while (index < tasks.length) {
-      const i = index++
-      results[i] = await tasks[i]()
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, worker)
-  await Promise.all(workers)
-  return results
-}
 
 /** Analyze a single token — wraps everything in try/catch to never throw. */
 async function analyzeToken(

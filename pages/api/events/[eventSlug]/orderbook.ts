@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { polymarketAPI } from '../../../../polymarket-api'
 import { computeOrderBookAnalytics, createOrderBookSnapshot } from '@/orderbook-analytics'
 import { cache, CacheKeys, CACHE_TTL } from '../../../../cache'
-import { createSuccessResponse, createErrorResponse } from '../../../../utils'
+import { createSuccessResponse, createErrorResponse, pLimit } from '../../../../utils'
 import {
   APIResponse,
   GammaMarket,
@@ -11,6 +11,7 @@ import {
   PriceLevel,
   PriceSizeLevel,
   WhaleOrder,
+  CLOBPrice,
 } from '../../../../types'
 
 // ── Grouped analytics types ──────────────────────────────────────────────────
@@ -363,16 +364,24 @@ function groupAnalytics(a: OrderBookAnalytics, book: OrderBook): OrderBookAnalyt
 async function analyzeMarket(market: GammaMarket): Promise<TokenOrderbook[]> {
   if (!market.clobTokenIds || market.clobTokenIds.length === 0) return []
 
-  return Promise.all(
+  const results = await Promise.all(
     market.clobTokenIds.map(async (tokenId, idx) => {
       const snapshotKey = `ob-snapshot:${tokenId}`
       const previousSnapshot = cache.get<ReturnType<typeof createOrderBookSnapshot>>(snapshotKey)
 
-      const [book, trades, priceHistory] = await Promise.all([
+      const [bookRes, tradesRes, pricesRes] = await Promise.allSettled([
         polymarketAPI.getOrderBook(tokenId),
         polymarketAPI.getTrades({ market: market.conditionId || market.id, limit: 200 }),
-        polymarketAPI.getPriceHistory({ tokenId, interval: '1d' }),
+        Promise.race([
+          polymarketAPI.getPriceHistory({ tokenId, interval: '1h', fidelity: 10 }),
+          new Promise<CLOBPrice[]>(resolve => setTimeout(() => resolve([]), 3_000))
+        ]),
       ])
+
+      if (bookRes.status === 'rejected') return null  // skip failed tokens
+      const book = bookRes.value
+      const trades = tradesRes.status === 'fulfilled' ? tradesRes.value : []
+      const priceHistory = pricesRes.status === 'fulfilled' ? pricesRes.value : []
 
       const raw = computeOrderBookAnalytics(book, trades, priceHistory, previousSnapshot)
       const grouped = groupAnalytics(raw, book)
@@ -388,6 +397,7 @@ async function analyzeMarket(market: GammaMarket): Promise<TokenOrderbook[]> {
       }
     })
   )
+  return results.filter((r): r is TokenOrderbook => r !== null)
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -458,8 +468,8 @@ export default async function handler(
     }
 
     // Analyze each market (each token = one outcome)
-    const marketResults: MarketOrderbookResult[] = await Promise.all(
-      markets.map(async (market) => {
+    const marketResults: MarketOrderbookResult[] = await pLimit(
+      markets.map((market) => async () => {
         let tokens: TokenOrderbook[] = []
         try {
           tokens = await analyzeMarket(market)
@@ -482,7 +492,8 @@ export default async function handler(
           endDate: market.endDate,
           tokens,
         }
-      })
+      }),
+      3
     )
 
     // ── Summary metrics ───────────────────────────────────────────────────

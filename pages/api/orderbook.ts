@@ -127,7 +127,7 @@ async function resolveTokenId(
         const matchScore =
           keywordScore(e.slug, kw) * 1.5 +  // slug match = strongest signal
           keywordScore(e.title, kw) +
-          keywordScore(e.description.slice(0, 300), kw) * 0.5
+          keywordScore((e.description ?? '').slice(0, 300), kw) * 0.5
         
         return {
           event: e,

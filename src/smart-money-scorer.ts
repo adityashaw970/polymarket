@@ -198,6 +198,7 @@ export class SmartMoneyScorer {
     });
 
     let winningMarkets = 0;
+    let evaluatedMarkets = 0;
 
     // Analyze each market
     tradesByMarket.forEach((marketTrades) => {
@@ -207,13 +208,16 @@ export class SmartMoneyScorer {
       const totalBuyCost = buys.reduce((sum, t) => sum + t.totalCost, 0);
       const totalSellRevenue = sells.reduce((sum, t) => sum + t.totalCost, 0);
 
-      // Market is profitable if sells > buys (in value)
-      if (totalSellRevenue > totalBuyCost) {
-        winningMarkets++;
+      // Only count markets with some exit (to avoid counting open positions as losses)
+      if (sells.length > 0) {
+        evaluatedMarkets++;
+        if (totalSellRevenue > totalBuyCost) {
+          winningMarkets++;
+        }
       }
     });
 
-    const winRate = winningMarkets / Math.max(1, tradesByMarket.size);
+    const winRate = evaluatedMarkets > 0 ? winningMarkets / evaluatedMarkets : 0;
 
     // Convert to score
     let score = (winRate - CONSISTENCY_SCORING.BASELINE_BREAKEVEN) * 100;

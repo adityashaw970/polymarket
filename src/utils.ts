@@ -157,6 +157,10 @@ export function isValidWalletAddress(address: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(address);
 }
 
+export function isValidWallet(wallet: string): boolean {
+  return isValidWalletAddress(wallet);
+}
+
 export function isValidConditionId(id: string): boolean {
   return /^0x[a-fA-F0-9]{64}$/.test(id);
 }

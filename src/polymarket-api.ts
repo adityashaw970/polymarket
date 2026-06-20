@@ -2,9 +2,11 @@ import crypto from 'crypto'
 import {
   API_ENDPOINTS,
   RATE_LIMITS,
+} from './constants'
+import {
   isValidConditionId,
   isValidWallet,
-} from './constants'
+} from './utils'
 import {
   CLOBPrice,
   GammaEvent,
