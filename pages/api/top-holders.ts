@@ -64,6 +64,7 @@ const POLY_LAUNCH_MS = new Date('2020-10-01').getTime()
 async function fetchUserLiveData(
   proxyWallet: string,
   conditionId: string,
+  tokenId: string,          // ← ADD THIS PARAMETER
 ): Promise<{
   totalPredictions: number
   joinedDate: number
@@ -85,7 +86,7 @@ async function fetchUserLiveData(
     const [tradedCountResult, marketPositionResult, earliestActivityResult, marketTradesResult] =
       await Promise.allSettled([
         fetchTradedCount(proxyWallet),
-        polymarketAPI.getPositions({ user: proxyWallet, conditionId, limit: 10 }),
+        polymarketAPI.getPositions({ user: proxyWallet, market: conditionId, limit: 10 }),
         fetchEarliestActivityTimestamp(proxyWallet),
         polymarketAPI.getTrades({ user: proxyWallet, market: conditionId, side: 'BUY', limit: 500, sortBy: 'timestamp', sortDirection: 'desc' }),
       ])
@@ -93,39 +94,29 @@ async function fetchUserLiveData(
     const totalPredictions =
       tradedCountResult.status === 'fulfilled' ? tradedCountResult.value : 0
 
-    // 2. Get avg price, total cost, and unrealized PnL from market position
     let avgBuyPrice = 0
     let totalCost = 0
     let unrealizedPnl = 0
+
     if (marketPositionResult.status === 'fulfilled' && marketPositionResult.value.length > 0) {
-      // Sum all positions for this market (in case of multiple outcome tokens)
-      let totalInitialCost = 0
-      let totalCurrentValue = 0
-      let totalShares = 0
+      // ✅ Filter to only the position matching THIS specific tokenId/outcome
+      const positions = marketPositionResult.value
+      const matchingPos = positions.find(p => p.asset === tokenId) ?? positions[0]
 
-      for (const pos of marketPositionResult.value) {
-        totalShares += pos.size
-        totalInitialCost += pos.initialCost
-        totalCurrentValue += pos.currentValue
-        unrealizedPnl += pos.cashPnl
-      }
-
-      if (totalShares > 0 && totalInitialCost > 0) {
-        avgBuyPrice = totalInitialCost / totalShares
-        totalCost = totalInitialCost
-      }
-
-      // Use position cashPnl as unrealized PnL (it's live/real)
-      unrealizedPnl = totalCurrentValue - totalInitialCost
+      // ✅ Use avgPrice directly from API — don't recompute it
+      avgBuyPrice = toNum(matchingPos.avgPrice)
+      totalCost = toNum(matchingPos.initialValue)
+      unrealizedPnl = toNum(matchingPos.cashPnl)
     } else if (marketTradesResult.status === 'fulfilled' && marketTradesResult.value.length > 0) {
-      // Fallback: aggregate BUY trades
-      const trades = marketTradesResult.value
+      // Fallback: aggregate BUY trades for this specific token
+      const trades = marketTradesResult.value.filter(t =>
+        !tokenId || t.asset === tokenId || t.outcomeIndex !== undefined
+      )
       const totalShares = trades.reduce((s, t) => s + t.sharesTraded, 0)
       totalCost = trades.reduce((s, t) => s + t.totalCost, 0)
       avgBuyPrice = totalShares > 0 ? totalCost / totalShares : 0
     }
 
-    // 3. Trade count for this market (all sides)
     let tradeCount = 0
     if (marketTradesResult.status === 'fulfilled') {
       tradeCount = marketTradesResult.value.length
@@ -301,15 +292,12 @@ async function fetchOutcomeHolders(
   // Enrich each holder with live data from the Data API
   const enriched = await Promise.allSettled(
     topRaw.map(async (raw, idx) => {
-      const liveData = await fetchUserLiveData(raw.proxyWallet, conditionId)
+      const liveData = await fetchUserLiveData(raw.proxyWallet, conditionId, tokenId)
 
       const shares = raw._amount
 
-      // Compute unrealizedPnl using live price if positions API didn't return one
-      let unrealizedPnl = liveData.unrealizedPnl
-      if (unrealizedPnl === 0 && liveData.avgBuyPrice > 0 && currentPrice > 0) {
-        unrealizedPnl = (currentPrice - liveData.avgBuyPrice) * shares
-      }
+      // Trust the positions API for unrealized PnL
+      const unrealizedPnl = liveData.unrealizedPnl
 
       const holder: TopHolder = {
         rank: idx + 1,

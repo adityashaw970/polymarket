@@ -88,6 +88,7 @@ type RawTrade = {
   bio?: string
   profileImage?: string
   profileImageOptimized?: string
+  outcomeIndex?: number
 }
 
 type RawActivity = RawTrade & {
@@ -239,6 +240,8 @@ function normalizeTrade(row: RawTrade): UserTrade {
     totalCost: size * price,
     timestamp: toMsTimestamp(row.timestamp),
     hashId: row.transactionHash || '',
+    asset: row.asset || '',
+    outcomeIndex: row.outcomeIndex,
   }
 }
 
@@ -256,11 +259,12 @@ function normalizePosition(row: RawPosition): UserPosition {
     price: toNumber(row.curPrice ?? row.avgPrice),
     cashPnl: toNumber(row.cashPnl),
     percentPnl: toNumber(row.percentPnl),
-    initialCost: toNumber(row.initialValue),
+    initialValue: toNumber(row.initialValue),
     currentValue: toNumber(row.currentValue),
     redeemable: Boolean(row.redeemable),
     mergeable: Boolean(row.mergeable),
     resolveTime: row.endDate || '',
+    asset: row.asset || '',
   }
 }
 

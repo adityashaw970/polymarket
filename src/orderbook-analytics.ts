@@ -37,13 +37,18 @@ export function computeOrderBookAnalytics(
   const top10Asks = book.asks.slice(0, 10)
   const bidUsd = top10Bids.reduce((s, l) => s + l.price * l.size, 0)
   const askUsd = top10Asks.reduce((s, l) => s + l.price * l.size, 0)
-  const imbalance = calcBidAskImbalance(bidUsd || totalBidSize, askUsd || totalAskSize)
-  const weightedMidPrice = calcWeightedMidPrice(bestBid, bestAsk, bidUsd || totalBidSize, askUsd || totalAskSize)
 
-  const bidDepth5 = sumSizes(book.bids.slice(0, 5))
-  const askDepth5 = sumSizes(book.asks.slice(0, 5))
-  const bidDepth10 = sumSizes(book.bids.slice(0, 10))
-  const askDepth10 = sumSizes(book.asks.slice(0, 10))
+  const finalBidVal = bidUsd > 0 ? bidUsd : totalBidSize * (book.bids[0]?.price ?? 0.5)
+  const finalAskVal = askUsd > 0 ? askUsd : totalAskSize * (book.asks[0]?.price ?? 0.5)
+
+  const imbalance = calcBidAskImbalance(finalBidVal, finalAskVal)
+  const weightedMidPrice = calcWeightedMidPrice(bestBid, bestAsk, finalBidVal, finalAskVal)
+
+  // USD-notional depth
+  const bidDepth5 = book.bids.slice(0, 5).reduce((s, l) => s + l.price * l.size, 0)
+  const askDepth5 = book.asks.slice(0, 5).reduce((s, l) => s + l.price * l.size, 0)
+  const bidDepth10 = book.bids.slice(0, 10).reduce((s, l) => s + l.price * l.size, 0)
+  const askDepth10 = book.asks.slice(0, 10).reduce((s, l) => s + l.price * l.size, 0)
 
   const supportLevels = calcSupportResistance(book.bids)
   const resistanceLevels = calcSupportResistance(book.asks)
@@ -64,10 +69,10 @@ export function computeOrderBookAnalytics(
   const spoofingScore = calcSpoofingScore(book, previousSnapshot)
   const marketMakerScore = calcMarketMakerScore(book)
 
-  const nextTick = calcNextTickProbability(imbalance, orderFlow.netFlow)
+  const nextTick = calcNextTickProbability(imbalance, orderFlow.netFlow, orderFlow.buyVolume + orderFlow.sellVolume)
   const volatility = calcVolatilityMetrics(priceHistory, book)
 
-  const liquidityScore = calcLiquidityScore(totalBidSize, totalAskSize, spread, book.bids.length, book.asks.length)
+  const liquidityScore = calcLiquidityScore(book, spread, book.bids.length, book.asks.length)
   const liquidityChange = previousSnapshot
     ? calcLiquidityChange(totalBidSize + totalAskSize, previousSnapshot.totalBidSize + previousSnapshot.totalAskSize)
     : 0
@@ -77,15 +82,12 @@ export function computeOrderBookAnalytics(
   // Compute cancellations
   const cancellations = calcCancellations(book, previousSnapshot, recentTrades)
 
-  // Compute time-based order rate
-  const tradeTimestamps = recentTrades.map(t => t.timestamp).filter(t => t > 0)
-  const timeSpanMs = tradeTimestamps.length >= 2
-    ? Math.max(1, Math.max(...tradeTimestamps) - Math.min(...tradeTimestamps))
-    : 60000
-  const ordersPerMinute = recentTrades.length > 0
-    ? (recentTrades.length / (timeSpanMs / 60000))
-    : 0
-  const newOrdersPerSecond = ordersPerMinute / 60
+  // Compute time-based trade rate using a fixed recent 60-second window
+  const nowTime = Date.now()
+  const ONE_MIN_MS = 60_000
+  const recentWindow = recentTrades.filter(t => t.timestamp > 0 && (nowTime - t.timestamp) < ONE_MIN_MS)
+  const ordersPerMinute = recentWindow.length
+  const newOrdersPerSecond = recentWindow.length / 60
 
   // Compute execution speed
   const sortedTrades = [...recentTrades].sort((a, b) => b.timestamp - a.timestamp)
@@ -100,7 +102,11 @@ export function computeOrderBookAnalytics(
       }
     }
     if (timeDiffs.length > 0) {
-      executionSpeedSeconds = timeDiffs.reduce((a, b) => a + b, 0) / timeDiffs.length
+      const sorted = [...timeDiffs].sort((a, b) => a - b)
+      const mid = Math.floor(sorted.length / 2)
+      executionSpeedSeconds = sorted.length % 2 === 0
+        ? (sorted[mid - 1] + sorted[mid]) / 2
+        : sorted[mid]
       executionSpeedTradesPerSecond = executionSpeedSeconds > 0 ? 1 / executionSpeedSeconds : 0
     }
   }
@@ -203,42 +209,44 @@ function calcCancellations(
   previousSnapshot?: OrderBookSnapshot | null,
   recentTrades?: UserTrade[]
 ): { count: number; volume: number } {
-  if (!previousSnapshot || !previousSnapshot.bids || !previousSnapshot.asks) {
-    return { count: 0, volume: 0 }
-  }
+  if (!previousSnapshot?.bids || !previousSnapshot?.asks) return { count: 0, volume: 0 }
 
-  let count = 0
-  let volume = 0
+  const TICK = 0.001
+  const round = (p: number) => Math.round(p / TICK) * TICK
 
-  const prevLevels = new Map<number, number>()
-  previousSnapshot.bids.forEach(l => prevLevels.set(l.price, l.size))
-  previousSnapshot.asks.forEach(l => prevLevels.set(l.price, l.size))
-
-  const currLevels = new Map<number, number>()
-  currentBook.bids.forEach(l => currLevels.set(l.price, l.size))
-  currentBook.asks.forEach(l => currLevels.set(l.price, l.size))
-
-  // Find trades that happened since the previous snapshot
-  const tradesSinceSnapshot = (recentTrades || []).filter(
-    t => t.timestamp > previousSnapshot.timestamp
-  )
-  const tradesAtPrice = new Map<number, number>()
-  tradesSinceSnapshot.forEach(t => {
-    tradesAtPrice.set(t.pricePerShare, (tradesAtPrice.get(t.pricePerShare) || 0) + t.sharesTraded)
+  // Executed volume at each rounded price since snapshot
+  const tradesSince = (recentTrades ?? []).filter(t => t.timestamp > previousSnapshot.timestamp)
+  const executedAtPrice = new Map<number, number>()
+  tradesSince.forEach(t => {
+    const rp = round(t.pricePerShare)
+    executedAtPrice.set(rp, (executedAtPrice.get(rp) ?? 0) + t.sharesTraded)
   })
 
-  // Compare previous levels to current levels to find decreases
-  for (const [price, prevSize] of prevLevels.entries()) {
-    const currSize = currLevels.get(price) || 0
-    if (currSize < prevSize) {
-      const sizeDecrease = prevSize - currSize
-      const executedVolume = tradesAtPrice.get(price) || 0
-      const cancelled = Math.max(0, sizeDecrease - executedVolume)
+  let count = 0, volume = 0
 
-      if (cancelled > 0.0001) {
-        count++
-        volume += cancelled
-      }
+  // Check bids separately
+  const prevBids = new Map(previousSnapshot.bids.map(l => [round(l.price), l.size]))
+  const currBids = new Map(currentBook.bids.map(l => [round(l.price), l.size]))
+  for (const [price, prevSize] of prevBids) {
+    const currSize = currBids.get(price) ?? 0
+    const decrease = prevSize - currSize
+    if (decrease > 0) {
+      const filled = executedAtPrice.get(price) ?? 0
+      const cancelled = Math.max(0, decrease - filled)
+      if (cancelled > 0.0001) { count++; volume += cancelled }
+    }
+  }
+
+  // Check asks separately
+  const prevAsks = new Map(previousSnapshot.asks.map(l => [round(l.price), l.size]))
+  const currAsks = new Map(currentBook.asks.map(l => [round(l.price), l.size]))
+  for (const [price, prevSize] of prevAsks) {
+    const currSize = currAsks.get(price) ?? 0
+    const decrease = prevSize - currSize
+    if (decrease > 0) {
+      const filled = executedAtPrice.get(price) ?? 0
+      const cancelled = Math.max(0, decrease - filled)
+      if (cancelled > 0.0001) { count++; volume += cancelled }
     }
   }
 
@@ -264,14 +272,14 @@ function calcWeightedMidPrice(bestBid: number, bestAsk: number, bidSize: number,
 
 function calcSupportResistance(levels: PriceLevel[]): PriceSizeLevel[] {
   if (levels.length === 0) return []
+  const prices = levels.map(l => l.price)
+  const range = Math.max(...prices) - Math.min(...prices)
+  const bucketSize = range > 0 ? range / 20 : 0.01  // ~20 buckets across the range
 
-  // Group nearby prices (within 1% of each other) and find clusters
-  const clusters: Map<number, number> = new Map()
-  const bucketSize = 0.01
-
+  const clusters = new Map<number, number>()
   for (const level of levels) {
     const bucket = Math.round(level.price / bucketSize) * bucketSize
-    clusters.set(bucket, (clusters.get(bucket) || 0) + level.size)
+    clusters.set(bucket, (clusters.get(bucket) ?? 0) + level.size)
   }
 
   const sorted = Array.from(clusters.entries())
@@ -361,8 +369,9 @@ function calcNetOrderFlow(trades: UserTrade[]): {
 
   for (const trade of trades) {
     const value = trade.sharesTraded * trade.pricePerShare
-    if (trade.side === 'BUY') buyVolume += value
-    else sellVolume += value
+    const side = (trade.side ?? '').toString().toUpperCase()
+    if (side === 'BUY') buyVolume += value
+    else if (side === 'SELL') sellVolume += value
   }
 
   const avgSize = trades.length > 0
@@ -381,7 +390,7 @@ function calcWhaleActivity(trades: UserTrade[]): {
   whaleOrders: WhaleOrder[]
   score: number
 } {
-  if (trades.length < 3) return { whaleOrders: [], score: 0 }
+  if (trades.length < 5) return { whaleOrders: [], score: 0 }
 
   const sizes = trades.map(t => t.sharesTraded)
   const mean = sizes.reduce((a, b) => a + b, 0) / sizes.length
@@ -410,7 +419,7 @@ function calcWhaleActivity(trades: UserTrade[]): {
   // Score: how much whale activity relative to total
   const whaleVolume = whaleOrders.reduce((sum, w) => sum + w.size, 0)
   const totalVolume = sizes.reduce((a, b) => a + b, 0)
-  const score = Math.min(100, Math.round((whaleVolume / Math.max(1, totalVolume)) * 100 * 2))
+  const score = Math.min(100, Math.round((whaleVolume / Math.max(1, totalVolume)) * 150))
 
   return { whaleOrders, score }
 }
@@ -425,11 +434,12 @@ function calcSpoofingScore(book: OrderBook, previousSnapshot?: OrderBookSnapshot
   if (previousTotal === 0) return 0
 
   const timeDiff = Date.now() - previousSnapshot.timestamp
-  if (timeDiff > 300000) return 0 // Only look at last 5 minutes
+  if (timeDiff > 30_000) return 0  // only last 30 seconds
+  if (timeDiff < 1_000) return 0   // too fast to measure reliably
 
   // Rapid large changes indicate potential spoofing
   const changePercent = Math.abs(currentTotal - previousTotal) / previousTotal
-  const rapidChange = timeDiff < 60000 && changePercent > 0.3
+  const rapidChange = changePercent > 0.3
 
   // Large one-sided imbalance shifts
   const imbalanceShift = Math.abs(
@@ -449,19 +459,6 @@ function calcMarketMakerScore(book: OrderBook): number {
 
   let score = 0
 
-  // Symmetric placement: check if bid/ask sizes are balanced at each level
-  const pairsToCheck = Math.min(5, book.bids.length, book.asks.length)
-  let symmetryScore = 0
-
-  for (let i = 0; i < pairsToCheck; i++) {
-    const bidSize = book.bids[i].size
-    const askSize = book.asks[i].size
-    const ratio = Math.min(bidSize, askSize) / Math.max(bidSize, askSize)
-    symmetryScore += ratio
-  }
-
-  score += Math.round((symmetryScore / pairsToCheck) * 40)
-
   // Tight spread indicates MM presence
   const bestBid = book.bids[0].price
   const bestAsk = book.asks[0].price
@@ -473,12 +470,12 @@ function calcMarketMakerScore(book: OrderBook): number {
   if (book.bids.length >= 8 && book.asks.length >= 8) score += 15
   else if (book.bids.length >= 5 && book.asks.length >= 5) score += 8
 
-  // Consistent sizing across levels
+  // Consistent sizing across levels (within-side CV consistency)
   const bidSizes = book.bids.slice(0, 5).map(l => l.size)
   const askSizes = book.asks.slice(0, 5).map(l => l.size)
   const bidCV = coefficientOfVariation(bidSizes)
   const askCV = coefficientOfVariation(askSizes)
-  if (bidCV < 0.5 && askCV < 0.5) score += 15
+  score += Math.round((1 - Math.min(1, (bidCV + askCV) / 2)) * 55) // 0-55 pts
 
   return Math.min(100, score)
 }
@@ -491,18 +488,20 @@ function coefficientOfVariation(values: number[]): number {
   return stdDev / mean
 }
 
-function calcNextTickProbability(imbalance: number, netFlow: number): {
+function calcNextTickProbability(
+  imbalance: number,
+  netFlow: number,
+  totalVolume: number
+): {
   up: number
   down: number
 } {
-  // Combine orderbook imbalance with recent order flow direction
-  // More bids + positive net flow → likely price up
-  const imbalanceSignal = (imbalance + 1) / 2 // normalize 0-1
-  const flowSignal = netFlow > 0 ? Math.min(1, netFlow / 1000) * 0.5 + 0.5 : Math.max(0, 0.5 + netFlow / 1000)
+  const imbalanceSignal = (imbalance + 1) / 2  // 0–1
+  const normalizedFlow = totalVolume > 0 ? netFlow / totalVolume : 0  // -1 to 1
+  const flowSignal = (normalizedFlow + 1) / 2  // 0–1
 
   const upProb = imbalanceSignal * 0.6 + flowSignal * 0.4
   const clampedUp = Math.max(0.05, Math.min(0.95, upProb))
-
   return {
     up: clampedUp,
     down: 1 - clampedUp,
@@ -520,7 +519,10 @@ function calcVolatilityMetrics(priceHistory: CLOBPrice[], book: OrderBook): {
     const returns: number[] = []
     for (let i = 1; i < priceHistory.length; i++) {
       if (priceHistory[i - 1].price > 0) {
-        returns.push(Math.log(priceHistory[i].price / priceHistory[i - 1].price))
+        const r = (priceHistory[i].price - priceHistory[i - 1].price) / priceHistory[i - 1].price
+        if (Number.isFinite(r)) {
+          returns.push(r)
+        }
       }
     }
 
@@ -549,12 +551,13 @@ function calcVolatilityMetrics(priceHistory: CLOBPrice[], book: OrderBook): {
   return { realized, implied, forecast }
 }
 
-function calcLiquidityScore(totalBid: number, totalAsk: number, spread: number, bidLevels: number, askLevels: number): number {
+function calcLiquidityScore(book: OrderBook, spread: number, bidLevels: number, askLevels: number): number {
   let score = 0
 
-  // Depth score (0-40)
-  const totalDepth = totalBid + totalAsk
-  score += Math.min(40, totalDepth * 0.004)
+  // Depth score (0-40) based on USD-notional depth
+  const totalDepthUsd = book.bids.reduce((s, l) => s + l.price * l.size, 0)
+                      + book.asks.reduce((s, l) => s + l.price * l.size, 0)
+  score += Math.min(40, totalDepthUsd / 250)  // $10,000 USD depth = max 40 pts
 
   // Spread score (0-30)
   if (spread < 0.01) score += 30
@@ -567,6 +570,8 @@ function calcLiquidityScore(totalBid: number, totalAsk: number, spread: number, 
   score += Math.min(15, avgLevels * 1.5)
 
   // Balance score (0-15)
+  const totalBid = sumSizes(book.bids)
+  const totalAsk = sumSizes(book.asks)
   const balance = Math.min(totalBid, totalAsk) / Math.max(1, Math.max(totalBid, totalAsk))
   score += balance * 15
 
@@ -579,12 +584,14 @@ function calcLiquidityChange(currentTotal: number, previousTotal: number): numbe
 }
 
 function calcHiddenLiquidity(trades: UserTrade[], visibleBookSize: number): number {
-  if (trades.length === 0 || visibleBookSize === 0) return 0
+  if (trades.length < 5 || visibleBookSize === 0) return 0
 
-  // If executed volume significantly exceeds visible book, there's hidden liquidity
-  const executedVolume = trades.reduce((sum, t) => sum + t.sharesTraded, 0)
-  const ratio = executedVolume / visibleBookSize
+  // Avg single trade size vs avg book replenishment implied by visible depth
+  const avgTradeSize = trades.reduce((s, t) => s + t.sharesTraded, 0) / trades.length
+  const impliedAvgLevelSize = visibleBookSize / Math.max(1, trades.length * 0.1)
 
-  // If ratio > 1, more was executed than visible → hidden iceberg orders
-  return Math.max(0, (ratio - 1) * visibleBookSize * 0.5)
+  // If trades are consistently larger than the visible levels they consume,
+  // the difference is a rough iceberg estimate
+  const excess = Math.max(0, avgTradeSize - impliedAvgLevelSize)
+  return excess * trades.length * 0.3
 }

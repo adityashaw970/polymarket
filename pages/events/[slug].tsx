@@ -41,7 +41,7 @@ export default function EventPage() {
 
   return (
     <main className="mx-auto min-h-screen max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-      <div className="rounded-[2rem] border border-white/10 bg-white/5 p-6 shadow-2xl shadow-slate-950/20 backdrop-blur">
+      <div className="rounded-4xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-slate-950/20 backdrop-blur">
         <div className="text-xs uppercase tracking-[0.24em] text-slate-400">Event detail</div>
         <h1 className="mt-2 text-3xl font-semibold text-white">{slug || 'Loading event...'}</h1>
         <p className="mt-2 max-w-3xl text-sm text-slate-300">
@@ -54,14 +54,14 @@ export default function EventPage() {
 
       {data && (
         <div className="mt-6 space-y-6">
-          <section className="rounded-[2rem] border border-white/10 bg-white/5 p-6 shadow-2xl shadow-slate-950/20 backdrop-blur">
+          <section className="rounded-4xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-slate-950/20 backdrop-blur">
             <h2 className="text-xl font-semibold text-white">{data.event.title}</h2>
             <p className="mt-2 text-sm text-slate-300">{data.event.description}</p>
           </section>
 
           <section className="grid gap-4">
             {data.outcomeMetrics.map((metric) => (
-              <article key={metric.marketId} className="rounded-[2rem] border border-white/10 bg-white/5 p-5 shadow-2xl shadow-slate-950/20 backdrop-blur">
+              <article key={metric.marketId} className="rounded-4xl border border-white/10 bg-white/5 p-5 shadow-2xl shadow-slate-950/20 backdrop-blur">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <div className="text-lg font-semibold text-white">{metric.eventTitle}</div>
@@ -135,7 +135,7 @@ export default function EventPage() {
             ))}
           </section>
 
-          <section className="rounded-[2rem] border border-white/10 bg-white/5 p-6 shadow-2xl shadow-slate-950/20 backdrop-blur">
+          <section className="rounded-4xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-slate-950/20 backdrop-blur">
             <div className="text-xs uppercase tracking-[0.24em] text-slate-400">Signals</div>
             <div className="mt-4 grid gap-3">
               {data.smartMoneySignals.map((signal) => (

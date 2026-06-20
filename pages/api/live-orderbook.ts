@@ -3,7 +3,7 @@ import { polymarketAPI } from '../../polymarket-api'
 import { computeOrderBookAnalytics, createOrderBookSnapshot } from '@/orderbook-analytics'
 import { cache, CacheKeys, CACHE_TTL } from '../../cache'
 import { createSuccessResponse, createErrorResponse } from '../../utils'
-import { APIResponse, GammaEvent, OrderBook, OrderBookAnalytics } from '../../types'
+import { APIResponse, GammaEvent, OrderBook, OrderBookAnalytics, CLOBPrice } from '../../types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -129,58 +129,103 @@ async function tryFetchBook(tokenId: string): Promise<OrderBook | null> {
 
 /** Analyze a single token — fires book + trades + priceHistory simultaneously
  *  to eliminate the sequential waterfall (book → then trades). */
+// ✅ Concurrency limiter: runs at most `limit` promises at a time
+async function pLimit<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length)
+  let index = 0
+
+  async function worker() {
+    while (index < tasks.length) {
+      const i = index++
+      results[i] = await tasks[i]()
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, worker)
+  await Promise.all(workers)
+  return results
+}
+
+/** Analyze a single token — wraps everything in try/catch to never throw. */
 async function analyzeToken(
   tokenId: string,
   outcomeIndex: number,
   outcomeName: string,
   conditionId: string
 ): Promise<LiveTokenData> {
-  // ── Check caches first ─────────────────────────────────────────────────────
-  const tradesCacheKey = `trades-mkt:${conditionId}`
-  const priceCacheKey  = `prices-1d:${tokenId}`
-  const snapshotKey    = `ob-snapshot:${tokenId}`
+  const defaultResult: LiveTokenData = {
+    tokenId,
+    outcomeIndex,
+    outcomeName,
+    analytics: null,
+    bookSnapshot: null,
+    hasLiveBook: false,
+  }
 
-  const cachedTrades   = cache.get<Awaited<ReturnType<typeof polymarketAPI.getTrades>>>(tradesCacheKey)
-  const cachedPrices   = cache.get<Awaited<ReturnType<typeof polymarketAPI.getPriceHistory>>>(priceCacheKey)
+  try {
+    // ── Check caches first ─────────────────────────────────────────────────────
+    const tradesCacheKey = `trades-mkt:${conditionId}`
+    const priceCacheKey  = `prices-1d:${tokenId}`
+    const snapshotKey    = `ob-snapshot:${tokenId}`
 
-  // ── Fire all three fetches in parallel to eliminate the waterfall ──────────
-  const [book, trades, priceHistory] = await Promise.all([
-    tryFetchBook(tokenId),
-    cachedTrades  ?? polymarketAPI.getTrades({ market: conditionId, limit: 100 }),
-    cachedPrices  ?? polymarketAPI.getPriceHistory({ tokenId, interval: '1d' }),
-  ])
+    const cachedTrades   = cache.get<Awaited<ReturnType<typeof polymarketAPI.getTrades>>>(tradesCacheKey)
+    const cachedPrices   = cache.get<CLOBPrice[]>(priceCacheKey)
 
-  // Cache trades + prices for 30 s so sibling tokens in the same market reuse them
-  if (!cachedTrades)  cache.set(tradesCacheKey, trades,       30_000)
-  if (!cachedPrices)  cache.set(priceCacheKey,  priceHistory, 30_000)
+    // ✅ Short timeout race: return [] if prices-history is too slow (volatility falls back to 0)
+    const PRICE_TIMEOUT_MS = 3_000
+    const priceHistoryPromise = cachedPrices
+      ? Promise.resolve(cachedPrices)
+      : Promise.race([
+          polymarketAPI.getPriceHistory({ tokenId, interval: '1h', fidelity: 10 }),
+          new Promise<CLOBPrice[]>(resolve => setTimeout(() => resolve([]), PRICE_TIMEOUT_MS))
+        ])
 
-  if (!book) {
+    // ✅ Use allSettled so a timeout on trades/prices doesn't kill the whole token
+    const [bookResult, tradesResult, priceResult] = await Promise.allSettled([
+      tryFetchBook(tokenId),
+      cachedTrades ? Promise.resolve(cachedTrades) : polymarketAPI.getTrades({ market: conditionId, limit: 100 }),
+      priceHistoryPromise,
+    ])
+
+    const book         = bookResult.status   === 'fulfilled' ? bookResult.value   : null
+    const trades       = tradesResult.status === 'fulfilled' ? tradesResult.value : []
+    const priceHistory = priceResult.status  === 'fulfilled' ? priceResult.value  : []
+
+    // Cache whatever succeeded
+    if (tradesResult.status === 'fulfilled' && !cachedTrades) {
+      cache.set(tradesCacheKey, trades, 30_000)
+    }
+    if (priceResult.status === 'fulfilled' && !cachedPrices) {
+      cache.set(priceCacheKey, priceHistory, 30_000)
+    }
+
+    if (!book) {
+      return defaultResult
+    }
+
+    const previousSnapshot = cache.get<ReturnType<typeof createOrderBookSnapshot>>(snapshotKey)
+    const analytics = computeOrderBookAnalytics(book, trades, priceHistory, previousSnapshot)
+    cache.set(snapshotKey, createOrderBookSnapshot(book), 600_000)
+
     return {
       tokenId,
       outcomeIndex,
       outcomeName,
-      analytics: null,
-      bookSnapshot: null,
-      hasLiveBook: false,
+      analytics,
+      bookSnapshot: {
+        bids: book.bids.slice(0, 20),
+        asks: book.asks.slice(0, 20),
+        bidLevels: book.bids.length,
+        askLevels: book.asks.length,
+      },
+      hasLiveBook: true,
     }
-  }
-
-  const previousSnapshot = cache.get<ReturnType<typeof createOrderBookSnapshot>>(snapshotKey)
-  const analytics = computeOrderBookAnalytics(book, trades, priceHistory, previousSnapshot)
-  cache.set(snapshotKey, createOrderBookSnapshot(book), 600_000)
-
-  return {
-    tokenId,
-    outcomeIndex,
-    outcomeName,
-    analytics,
-    bookSnapshot: {
-      bids: book.bids.slice(0, 20),
-      asks: book.asks.slice(0, 20),
-      bidLevels: book.bids.length,
-      askLevels: book.asks.length,
-    },
-    hasLiveBook: true,
+  } catch (err) {
+    console.error(`[analyzeToken] Error analyzing token ${tokenId}:`, err)
+    return defaultResult
   }
 }
 
@@ -315,37 +360,65 @@ export default async function handler(
       )
     }
 
-    // Analyze each market's tokens in parallel (limit to 4 tokens per market)
-    const marketResults: LiveMarketData[] = await Promise.all(
-      markets.map(async (market) => {
-        const tokenIds = (market.clobTokenIds ?? []).slice(0, 4)
-        const tokenResults = await Promise.all(
-          tokenIds.map((tokenId, idx) =>
-            analyzeToken(
-              tokenId,
-              idx,
-              market.outcomes?.[idx] ?? `Outcome ${idx}`,
-              market.conditionId || market.id
-            )
-          )
-        )
+    // Build flat task list: each task = one token analysis
+    type TokenTask = { market: typeof markets[0]; tokenId: string; idx: number }
+    const tokenTasks: TokenTask[] = []
+    for (const market of markets) {
+      const tokenIds = (market.clobTokenIds ?? []).slice(0, 4)
+      tokenIds.forEach((tokenId, idx) => tokenTasks.push({ market, tokenId, idx }))
+    }
 
+    // Run with max 5 concurrent CLOB requests across all tokens
+    const tokenResults = await pLimit(
+      tokenTasks.map(({ market, tokenId, idx }) => () =>
+        analyzeToken(
+          tokenId,
+          idx,
+          market.outcomes?.[idx] ?? `Outcome ${idx}`,
+          market.conditionId || market.id
+        )
+      ),
+      5 // max 5 concurrent CLOB requests
+    )
+
+    // Reassemble into per-market structure, wrapping each in try/catch for safety
+    const marketResults: LiveMarketData[] = markets.map((market) => {
+      try {
+        const tokens = tokenResults.filter((_, i) =>
+          tokenTasks[i].market.id === market.id
+        )
         return {
           marketId: market.id,
           conditionId: market.conditionId,
           title: market.title,
           question: market.question,
-          outcomes: market.outcomes,
+          outcomes: market.outcomes ?? [],
           active: market.active,
           closed: market.closed,
-          volume24hr: market.volume24hr,
-          volumeAll: market.volumeAll,
-          liquidity: market.liquidity,
+          volume24hr: market.volume24hr ?? 0,
+          volumeAll: market.volumeAll ?? 0,
+          liquidity: market.liquidity ?? 0,
           endDate: market.endDate,
-          tokens: tokenResults,
+          tokens,
         }
-      })
-    )
+      } catch (err) {
+        console.warn(`[live-orderbook] market ${market.id} failed:`, err)
+        return {
+          marketId: market.id,
+          conditionId: market.conditionId,
+          title: market.title,
+          question: market.question,
+          outcomes: market.outcomes ?? [],
+          active: market.active,
+          closed: market.closed,
+          volume24hr: 0,
+          volumeAll: 0,
+          liquidity: 0,
+          endDate: market.endDate,
+          tokens: [],
+        }
+      }
+    })
 
     // ── Build summary ──────────────────────────────────────────────────────
     const allTokens = marketResults.flatMap(m => m.tokens)

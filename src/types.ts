@@ -59,11 +59,12 @@ export interface UserPosition {
   price: number;
   cashPnl: number;
   percentPnl: number;
-  initialCost: number;
+  initialValue: number;
   currentValue: number;
   redeemable: boolean;
   mergeable: boolean;
   resolveTime: string;
+  asset?: string;
 }
 
 export interface UserTrade {
@@ -79,6 +80,8 @@ export interface UserTrade {
   totalCost: number;
   timestamp: number;
   hashId: string;
+  asset?: string;
+  outcomeIndex?: number;
 }
 
 export interface UserActivity {
