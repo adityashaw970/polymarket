@@ -64,12 +64,12 @@ export default async function handler(
     const predictionsCount = new Set(trades.map((trade) => trade.marketId)).size || trades.length
 
     // Derive join date from profile (fetched in parallel) or earliest trade already in memory
-    const joinedAt =
-      (profile?.createdAt && profile.createdAt > 0)
-        ? profile.createdAt
-        : trades.length > 0
-          ? Math.min(...trades.map((t) => t.timestamp))
-          : Date.now()
+    const rawMin = trades.length > 0 ? Math.min(...trades.map((t) => t.timestamp)) : 0
+    const joinedAt = (profile?.createdAt && profile.createdAt > 0)
+      ? profile.createdAt
+      : rawMin > 0
+        ? (rawMin < 1e12 ? rawMin * 1000 : rawMin)
+        : Date.now()
     const joinedDaysAgo = daysAgo(joinedAt)
     const largestTrade = trades.length > 0 ? Math.max(...trades.map((trade) => trade.totalCost)) : 0
 

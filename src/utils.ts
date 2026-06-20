@@ -85,32 +85,27 @@ export function calculateWinRate(
     redeemedByMarket.set(r.conditionId, (redeemedByMarket.get(r.conditionId) ?? 0) + r.cashChanged);
   });
 
-  // Shares still held haven't been sold or redeemed — use their live
-  // mark-to-market value as the "exit value" for that portion of the bet
-  const openValueByMarket = new Map<string, number>();
-  openPositions.forEach((p) => {
-    openValueByMarket.set(p.marketId, (openValueByMarket.get(p.marketId) ?? 0) + p.currentValue);
-  });
-
   const allMarkets = new Set([
     ...tradesByMarket.keys(),
     ...redeemedByMarket.keys(),
-    ...openValueByMarket.keys(),
   ]);
   if (allMarkets.size === 0) return 0;
 
   let winCount = 0;
+  let evaluatedMarkets = 0;
   allMarkets.forEach((marketId) => {
     const marketTrades = tradesByMarket.get(marketId) ?? [];
     const buyCost = marketTrades.filter((t) => t.side === 'BUY').reduce((sum, t) => sum + t.totalCost, 0);
     const sellRevenue = marketTrades.filter((t) => t.side === 'SELL').reduce((sum, t) => sum + t.totalCost, 0);
     const redeemRevenue = redeemedByMarket.get(marketId) ?? 0;
-    const openValue = openValueByMarket.get(marketId) ?? 0;
 
-    if (sellRevenue + redeemRevenue + openValue > buyCost) winCount++;
+    if (redeemRevenue > 0 || sellRevenue > buyCost * 0.1) {
+      evaluatedMarkets++;
+      if (sellRevenue + redeemRevenue > buyCost) winCount++;
+    }
   });
 
-  return winCount / allMarkets.size;
+  return evaluatedMarkets > 0 ? winCount / evaluatedMarkets : 0;
 }
 
 export function calculateProfitPerPrediction(pnl: number, predictionsCount: number): number {
@@ -403,5 +398,28 @@ export async function batchFetch<T>(
     batchResults.forEach(({ id, data }) => results.set(id, data));
   }
 
+  return results;
+}
+
+// ============================================================================
+// CONCURRENCY LIMITER
+// ============================================================================
+
+export async function pLimit<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let index = 0;
+
+  async function worker() {
+    while (index < tasks.length) {
+      const i = index++;
+      results[i] = await tasks[i]();
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, worker);
+  await Promise.all(workers);
   return results;
 }

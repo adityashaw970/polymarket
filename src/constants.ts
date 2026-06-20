@@ -129,12 +129,12 @@ export const CONSISTENCY_SCORING = {
 // ============================================================================
 
 export const CACHE_TTL = {
-  LEADERBOARD: 1 * 60 * 1000, // 1 minute
-  TRADER_ACTIVITY: 1 * 60 * 1000, // 1 minute
-  MARKET_DATA: 1 * 60 * 1000, // 1 minute
-  POSITIONS: 1 * 60 * 1000, // 1 minute
-  HOLDERS: 1 * 60 * 1000, // 1 minute
-  PRICE_DATA: 30 * 1000, // 30 seconds (keep at 30s as it is already under a minute)
+  LEADERBOARD: 2 * 60 * 1000,         // 2 min
+  TRADER_ACTIVITY: 3 * 60 * 1000,     // 3 min
+  MARKET_DATA: 5 * 60 * 1000,         // 5 min
+  POSITIONS: 2 * 60 * 1000,           // 2 min
+  HOLDERS: 60 * 1000,                 // 1 min
+  PRICE_DATA: 30 * 1000,              // 30s
 } as const;
 
 // ============================================================================

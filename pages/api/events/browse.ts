@@ -77,7 +77,7 @@ export default async function handler(
         !keyword ||
         e.slug.toLowerCase().includes(keyword) ||
         e.title.toLowerCase().includes(keyword) ||
-        e.description.toLowerCase().includes(keyword)
+        (e.description ?? '').toLowerCase().includes(keyword)
       )
 
     // Paginate after filtering

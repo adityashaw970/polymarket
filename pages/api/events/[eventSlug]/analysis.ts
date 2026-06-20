@@ -17,7 +17,7 @@ import {
   SmartMoneyTrader,
   SmartMoneyTraderPosition,
 } from '../../../../types'
-import { createErrorResponse, createSuccessResponse, batchMap } from '../../../../utils'
+import { createErrorResponse, createSuccessResponse, batchMap, daysAgo } from '../../../../utils'
 
 function toTraderPosition(
   wallet: string,
@@ -227,34 +227,29 @@ export default async function handler(
         const smartMoneyHolders: SmartMoneyTraderPosition[] = await batchMap(
           holders.slice(0, limit),
           async (holder) => {
-            const [traderTrades, traderPositions] = await Promise.all([
-              polymarketAPI.getTrades({
-                user: holder.proxyWallet,
-                market: market.conditionId || market.id,
-                limit: 100,
-              }),
-              polymarketAPI.getPositions({
-                user: holder.proxyWallet,
-                limit: 50,
-              }),
-            ])
+            const traderTrades = await polymarketAPI.getTrades({
+              user: holder.proxyWallet,
+              market: market.conditionId || market.id,
+              limit: 100,
+            })
 
             const uniqueMarkets = new Set(traderTrades.map((trade) => trade.marketId))
-            const joinedAt = traderTrades.length > 0 ? Math.min(...traderTrades.map((trade) => trade.timestamp)) : Date.now()
+            const rawJoined = traderTrades.length > 0 ? Math.min(...traderTrades.map((trade) => trade.timestamp)) : 0
+            const joinedAt = rawJoined > 0 ? (rawJoined < 1e12 ? rawJoined * 1000 : rawJoined) : Date.now()
             const leaderboardLikeTrader: LeaderboardUser = {
               proxyWallet: holder.proxyWallet,
               userUsername: holder.userUsername || holder.userDisplayName,
               userDisplayName: holder.userDisplayName || holder.userUsername,
               rank: 0,
-              pnl: traderPositions.reduce((sum, position) => sum + position.cashPnl, 0),
+              pnl: holder.cashPnl,
               volume: traderTrades.reduce((sum, trade) => sum + trade.totalCost, 0),
               predictionsCount: uniqueMarkets.size || traderTrades.length,
               largestTrade: traderTrades.length > 0 ? Math.max(...traderTrades.map((trade) => trade.totalCost)) : 0,
               joinedAt,
-              joinedDaysAgo: 0,
+              joinedDaysAgo: daysAgo(joinedAt),
             }
 
-            const score = SmartMoneyScorer.calculateSmartMoneyScore(leaderboardLikeTrader, traderTrades, traderPositions)
+            const score = SmartMoneyScorer.calculateSmartMoneyScore(leaderboardLikeTrader, traderTrades, [])
             const buyTrades = traderTrades.filter((trade) => trade.side === 'BUY')
             const sellTrades = traderTrades.filter((trade) => trade.side === 'SELL')
             const averageTradeSize =
@@ -267,7 +262,7 @@ export default async function handler(
               {
                 size: holder.size,
                 avgPrice: holder.averagePrice,
-                currentValue: holder.size * Math.max(holder.currentPrice, 0),
+                currentValue: holder.size * (getHolderOutcomePrice(holder.outcome) || holder.currentPrice),
                 cashPnl: holder.cashPnl,
               },
               traderTrades.length,
@@ -292,7 +287,7 @@ export default async function handler(
             const [book, marketTrades, priceHistory] = await Promise.all([
               polymarketAPI.getOrderBook(tokenId),
               polymarketAPI.getTrades({ market: market.conditionId || market.id, limit: 200 }),
-              polymarketAPI.getPriceHistory({ tokenId, limit: 100 }),
+              polymarketAPI.getPriceHistory({ tokenId, interval: '1h', fidelity: 10 }),
             ])
 
             const snapshotKey = `ob-snapshot:${tokenId}`
@@ -353,8 +348,13 @@ export default async function handler(
 
         for (const [wallet, traderTrades] of topTraders) {
           const totalCost = traderTrades.reduce((sum, trade) => sum + trade.totalCost, 0)
-          const totalPnl = traderTrades.reduce((sum, trade) => sum + (trade.side === 'SELL' ? trade.totalCost : -trade.totalCost), 0)
+          const buyCost = traderTrades.filter(t => t.side === 'BUY').reduce((s,t) => s + t.totalCost, 0)
+          const sellRevenue = traderTrades.filter(t => t.side === 'SELL').reduce((s,t) => s + t.totalCost, 0)
+          const totalPnl = sellRevenue - buyCost
           const predictionsCount = new Set(traderTrades.map((trade) => trade.marketId)).size || traderTrades.length
+          const rawJoinedAt = traderTrades.length > 0 ? Math.min(...traderTrades.map((trade) => trade.timestamp)) : 0
+          const joinedAt = rawJoinedAt > 0 ? (rawJoinedAt < 1e12 ? rawJoinedAt * 1000 : rawJoinedAt) : Date.now()
+          const joinedDaysAgo = daysAgo(joinedAt)
           const trader: SmartMoneyTrader = {
             proxyWallet: wallet,
             userUsername: traderTrades[0]?.userUsername,
@@ -364,8 +364,8 @@ export default async function handler(
             volume: totalCost,
             predictionsCount,
             largestTrade: traderTrades.length > 0 ? Math.max(...traderTrades.map((trade) => trade.totalCost)) : 0,
-            joinedAt: traderTrades.length > 0 ? Math.min(...traderTrades.map((trade) => trade.timestamp)) : Date.now(),
-            joinedDaysAgo: 0,
+            joinedAt,
+            joinedDaysAgo,
             smartMoneyScore: {
               totalScore: 0,
               efficiency: 0,

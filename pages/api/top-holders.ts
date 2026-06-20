@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { polymarketAPI } from '../../polymarket-api'
 import { cache } from '../../cache'
-import { createSuccessResponse, createErrorResponse } from '../../utils'
+import { createSuccessResponse, createErrorResponse, pLimit } from '../../utils'
 import { APIResponse } from '../../types'
 
 export interface TopHolder {
@@ -110,7 +110,7 @@ async function fetchUserLiveData(
     } else if (marketTradesResult.status === 'fulfilled' && marketTradesResult.value.length > 0) {
       // Fallback: aggregate BUY trades for this specific token
       const trades = marketTradesResult.value.filter(t =>
-        !tokenId || t.asset === tokenId || t.outcomeIndex !== undefined
+        !tokenId || t.asset === tokenId
       )
       const totalShares = trades.reduce((s, t) => s + t.sharesTraded, 0)
       totalCost = trades.reduce((s, t) => s + t.totalCost, 0)
@@ -145,9 +145,12 @@ async function fetchHoldersForToken(
     `&limit=${limit + 20}` +
     `&sortBy=amount&sortDirection=desc`
 
+  const controller1 = new AbortController()
+  const timer1 = setTimeout(() => controller1.abort(), 5_000)
   try {
     const payload = await fetch(primaryUrl, {
       headers: { Accept: 'application/json', 'User-Agent': 'PolymarketTracker/1.0' },
+      signal: controller1.signal,
     }).then(r => r.json()) as unknown
 
     if (Array.isArray(payload) && payload.length > 0) {
@@ -164,7 +167,9 @@ async function fetchHoldersForToken(
       }
       if (holders.length > 0) return holders
     }
-  } catch { /* fallthrough */ }
+  } catch { /* fallthrough */ } finally {
+    clearTimeout(timer1)
+  }
 
   const fallbackUrl =
     `https://data-api.polymarket.com/holders` +
@@ -172,9 +177,12 @@ async function fetchHoldersForToken(
     `&limit=${(limit + 20) * 4}` +
     `&sortBy=amount&sortDirection=desc`
 
+  const controller2 = new AbortController()
+  const timer2 = setTimeout(() => controller2.abort(), 5_000)
   try {
     const payload = await fetch(fallbackUrl, {
       headers: { Accept: 'application/json', 'User-Agent': 'PolymarketTracker/1.0' },
+      signal: controller2.signal,
     }).then(r => r.json()) as unknown
 
     if (!Array.isArray(payload)) return []
@@ -211,7 +219,9 @@ async function fetchHoldersForToken(
 
     const filtered = all.filter(h => h.outcomeIndex === outcomeIndex)
     return filtered.length > 0 ? filtered : all
-  } catch { return [] }
+  } catch { return [] } finally {
+    clearTimeout(timer2)
+  }
 }
 
 /**
@@ -290,35 +300,40 @@ async function fetchOutcomeHolders(
   const currentPrice = await fetchCurrentPrice(tokenId)
 
   // Enrich each holder with live data from the Data API
-  const enriched = await Promise.allSettled(
-    topRaw.map(async (raw, idx) => {
-      const liveData = await fetchUserLiveData(raw.proxyWallet, conditionId, tokenId)
+  const enriched = await pLimit(
+    topRaw.map((raw, idx) => async () => {
+      try {
+        const liveData = await fetchUserLiveData(raw.proxyWallet, conditionId, tokenId)
 
-      const shares = raw._amount
+        const shares = raw._amount
 
-      // Trust the positions API for unrealized PnL
-      const unrealizedPnl = liveData.unrealizedPnl
+        // Trust the positions API for unrealized PnL
+        const unrealizedPnl = liveData.unrealizedPnl
 
-      const holder: TopHolder = {
-        rank: idx + 1,
-        proxyWallet: raw.proxyWallet,
-        username: (raw.name && !raw.name.startsWith('0x')) ? raw.name : (raw.pseudonym || raw.name || undefined),
-        displayName: raw.name || raw.pseudonym || undefined,
-        profileImage: raw.profileImageOptimized || raw.profileImage,
-        outcome: outcomeName,
-        outcomeIndex,
-        shares,
-        avgBuyPrice: liveData.avgBuyPrice,
-        totalCost: liveData.totalCost,
-        currentPrice,
-        unrealizedPnl,
-        tradeCount: liveData.tradeCount,
-        profileUrl: `https://polymarket.com/profile/${raw.proxyWallet}`,
-        totalPredictions: liveData.totalPredictions,
-        joinedDate: liveData.joinedDate,
+        const holder: TopHolder = {
+          rank: idx + 1,
+          proxyWallet: raw.proxyWallet,
+          username: (raw.name && !raw.name.startsWith('0x')) ? raw.name : (raw.pseudonym || raw.name || undefined),
+          displayName: raw.name || raw.pseudonym || undefined,
+          profileImage: raw.profileImageOptimized || raw.profileImage,
+          outcome: outcomeName,
+          outcomeIndex,
+          shares,
+          avgBuyPrice: liveData.avgBuyPrice,
+          totalCost: liveData.totalCost,
+          currentPrice,
+          unrealizedPnl,
+          tradeCount: liveData.tradeCount,
+          profileUrl: `https://polymarket.com/profile/${raw.proxyWallet}`,
+          totalPredictions: liveData.totalPredictions,
+          joinedDate: liveData.joinedDate,
+        }
+        return { status: 'fulfilled' as const, value: holder }
+      } catch (err) {
+        return { status: 'rejected' as const, reason: err }
       }
-      return holder
-    })
+    }),
+    5
   )
 
   const holders: TopHolder[] = enriched.map((r, idx) => {
@@ -392,10 +407,11 @@ export default async function handler(
           }))
         : [{ tokenId: '', outcome: 'All', outcomeIndex: 0 }]
 
-    const outcomeGroups = await Promise.all(
-      groupDefs.map(g =>
+    const outcomeGroups = await pLimit(
+      groupDefs.map(g => () =>
         fetchOutcomeHolders(conditionId, g.tokenId, g.outcome, g.outcomeIndex, limitParam)
-      )
+      ),
+      2
     )
 
     const response: TopHoldersResponse = {

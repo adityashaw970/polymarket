@@ -29,7 +29,7 @@ export interface GammaEvent {
   id: string;
   slug: string;
   title: string;
-  description: string;
+  description: string | null;
   active: boolean;
   closed: boolean;
   archived: boolean;
@@ -265,7 +265,7 @@ export interface PriceSizeLevel {
 }
 
 export interface WhaleOrder {
-  side: 'BID' | 'ASK' | 'BUY' | 'SELL';
+  side: 'BUY' | 'SELL';
   price: number;
   size: number;
   timestamp: number;

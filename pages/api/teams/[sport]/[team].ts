@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { polymarketAPI } from '../../../../polymarket-api'
 import { computeOrderBookAnalytics, createOrderBookSnapshot } from '@/orderbook-analytics'
 import { cache } from '../../../../cache'
-import { createSuccessResponse, createErrorResponse } from '../../../../utils'
+import { createSuccessResponse, createErrorResponse, pLimit } from '../../../../utils'
 import { APIResponse, GammaEvent, GammaMarket, OrderBookAnalytics } from '../../../../types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -30,12 +30,22 @@ async function fetchOrderbookAnalytics(
   if (!market.clobTokenIds || market.clobTokenIds.length === 0) return null
 
   const tokenId = market.clobTokenIds[0]
+  const timeoutMs = 5_000
+  let timer: NodeJS.Timeout | undefined
+
   try {
-    const [book, trades, priceHistory] = await Promise.all([
+    const fetchPromise = Promise.all([
       polymarketAPI.getOrderBook(tokenId),
       polymarketAPI.getTrades({ market: market.conditionId || market.id, limit: 200 }),
       polymarketAPI.getPriceHistory({ tokenId, interval: '1d' }),
     ])
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Timeout')), timeoutMs)
+    })
+
+    const [book, trades, priceHistory] = await Promise.race([fetchPromise, timeoutPromise])
+    if (timer) clearTimeout(timer)
 
     const snapshotKey = `ob-snapshot:${tokenId}`
     const previousSnapshot = cache.get<ReturnType<typeof createOrderBookSnapshot>>(snapshotKey)
@@ -47,8 +57,48 @@ async function fetchOrderbookAnalytics(
 
     return analytics
   } catch {
+    if (timer) clearTimeout(timer)
     return null
   }
+}
+
+function scoreEvent(e: GammaEvent, teamWords: string, sportWords: string): number {
+  let score = 0
+  const slug = e.slug.toLowerCase()
+  const title = e.title.toLowerCase()
+  const desc = (e.description ?? '').toLowerCase()
+
+  const teamKw = teamWords.toLowerCase()
+  const sportKw = sportWords.toLowerCase()
+  const teamKwWords = teamKw.split(/\s+/).filter(w => w.length > 2)
+
+  // Team-specific scoring (highest priority)
+  if (slug === teamKw || slug === teamKw.replace(/\s+/g, '-')) score += 200
+  if (title.startsWith(teamKw)) score += 150
+  if (slug.includes(teamKw.replace(/\s+/g, '-'))) score += 100
+  if (title.includes(teamKw)) score += 80
+
+  // Individual team word matches (e.g. "lakers", "giants")
+  for (const word of teamKwWords) {
+    if (slug.includes(word)) score += 40
+    if (title.includes(word)) score += 30
+    if (desc.includes(word)) score += 8
+  }
+  // All team words matched bonus
+  if (teamKwWords.length > 1 && teamKwWords.every(w => title.includes(w) || slug.includes(w))) {
+    score += 50
+  }
+
+  // Sport context (lower weight — just a tiebreaker)
+  if (slug.includes(sportKw) || title.includes(sportKw)) score += 10
+
+  // Active markets are preferred
+  if (e.active && !e.closed) score += 20
+
+  // Volume bonus (log-scaled)
+  if (e.volumeAll > 0) score += Math.min(30, Math.log10(e.volumeAll + 1) * 5)
+
+  return score
 }
 
 // ── Response shape ────────────────────────────────────────────────────────────
@@ -325,41 +375,6 @@ export default async function handler(
     const sportKw = sportWords.toLowerCase()
     const teamKwWords = teamKw.split(/\s+/).filter(w => w.length > 2)
 
-    function scoreEvent(e: GammaEvent): number {
-      let score = 0
-      const slug = e.slug.toLowerCase()
-      const title = e.title.toLowerCase()
-      const desc = e.description.toLowerCase()
-
-      // Team-specific scoring (highest priority)
-      if (slug === teamKw || slug === teamKw.replace(/\s+/g, '-')) score += 200
-      if (title.startsWith(teamKw)) score += 150
-      if (slug.includes(teamKw.replace(/\s+/g, '-'))) score += 100
-      if (title.includes(teamKw)) score += 80
-
-      // Individual team word matches (e.g. "lakers", "giants")
-      for (const word of teamKwWords) {
-        if (slug.includes(word)) score += 40
-        if (title.includes(word)) score += 30
-        if (desc.includes(word)) score += 8
-      }
-      // All team words matched bonus
-      if (teamKwWords.length > 1 && teamKwWords.every(w => title.includes(w) || slug.includes(w))) {
-        score += 50
-      }
-
-      // Sport context (lower weight — just a tiebreaker)
-      if (slug.includes(sportKw) || title.includes(sportKw)) score += 10
-
-      // Active markets are preferred
-      if (e.active && !e.closed) score += 20
-
-      // Volume bonus (log-scaled)
-      if (e.volumeAll > 0) score += Math.min(30, Math.log10(e.volumeAll + 1) * 5)
-
-      return score
-    }
-
     // Fetch active events + closed events in parallel
     const [activeResult, closedResult] = await Promise.allSettled([
       polymarketAPI.getEvents({ limit: 200, active: true, closed: false, orderBy: 'volumeAll', ascending: false }),
@@ -372,7 +387,7 @@ export default async function handler(
 
     // Score and filter
     const scored = allBrowsed
-      .map(e => ({ event: e, score: scoreEvent(e) }))
+      .map(e => ({ event: e, score: scoreEvent(e, teamWords, sportWords) }))
       .filter(({ score }) => score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 10)
@@ -402,8 +417,8 @@ export default async function handler(
       events.slice(0, 5).map(async (event) => {
         const markets = event.groupedMarkets ?? []
 
-        const marketsWithAnalytics: MarketWithAnalytics[] = await Promise.all(
-          markets.slice(0, 6).map(async (market) => {
+        const marketsWithAnalytics: MarketWithAnalytics[] = await pLimit(
+          markets.slice(0, 6).map((market) => async () => {
             const analytics = withAnalytics
               ? await fetchOrderbookAnalytics(market)
               : null
@@ -423,7 +438,8 @@ export default async function handler(
               orderbookAnalytics: analytics,
               orderbookAnalyticsGrouped: analytics ? groupAnalytics(analytics) : null,
             }
-          })
+          }),
+          3
         )
 
         return {

@@ -508,7 +508,7 @@ export default async function handler(
     const response: EventOrderbookResponse = {
       eventSlug,
       eventTitle: event.title,
-      eventDescription: event.description,
+      eventDescription: event.description ?? '',
       active: event.active,
       closed: event.closed,
       computedAt: new Date().toISOString(),

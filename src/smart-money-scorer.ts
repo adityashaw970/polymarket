@@ -87,7 +87,10 @@ export class SmartMoneyScorer {
       return Math.max(0, ppScore * 0.6);
     }
 
-    const profitRatio = trader.pnl / Math.max(1, trader.volume);
+    const buyTrades = trades.filter((t) => t.side === 'BUY');
+    const buyVolume = buyTrades.reduce((sum, t) => sum + t.totalCost, 0);
+    const netInvested = buyVolume > 0 ? buyVolume : trader.volume / 2;
+    const profitRatio = trader.pnl / Math.max(1, netInvested);
     const ratioScore = Math.min(
       100,
       (profitRatio / EFFICIENCY_SCORING.BASELINE_PROFIT_RATIO) * 50 + 50
@@ -108,15 +111,16 @@ export class SmartMoneyScorer {
     const buyTrades = trades.filter((t) => t.side === 'BUY');
     if (buyTrades.length === 0) return 45;
 
-    // Count early entries
-    const earlyEntries = buyTrades.filter((t) => t.pricePerShare < SMART_MONEY_THRESHOLDS.EARLY_ENTRY_PRICE);
+    // Count early entries relative to the average buy price
+    const currentAvgPrice = buyTrades.reduce((s, t) => s + t.pricePerShare, 0) / buyTrades.length;
+    const earlyEntries = buyTrades.filter((t) => t.pricePerShare < currentAvgPrice * 0.7);
     const earlyRatio = earlyEntries.length / buyTrades.length;
 
     // Score early entry consistency
     let timingScore = earlyRatio * 100;
 
     // Bonus for very early entries
-    const veryEarlyEntries = buyTrades.filter((t) => t.pricePerShare < 0.15);
+    const veryEarlyEntries = buyTrades.filter((t) => t.pricePerShare < currentAvgPrice * 0.35);
     if (veryEarlyEntries.length > 0) {
       timingScore += (veryEarlyEntries.length / buyTrades.length) * 20;
     }

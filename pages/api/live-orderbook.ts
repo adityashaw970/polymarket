@@ -92,7 +92,7 @@ function scoreEvent(event: GammaEvent, kw: string): number {
   const k = kw.toLowerCase()
   const slug = event.slug.toLowerCase()
   const title = event.title.toLowerCase()
-  const desc = event.description.toLowerCase().slice(0, 300)
+  const desc = (event.description ?? '').toLowerCase().slice(0, 300)
 
   let score = 0
   if (slug === k || slug === k.replace(/\s+/g, '-')) score += 120
@@ -436,7 +436,7 @@ export default async function handler(
     const response: LiveOrderbookResponse = {
       eventSlug: event.slug,
       eventTitle: event.title,
-      eventDescription: event.description,
+      eventDescription: event.description ?? '',
       active: event.active,
       closed: event.closed,
       computedAt: new Date().toISOString(),

@@ -120,7 +120,7 @@ export default async function handler(
         let score = 0
         const slug = e.slug.toLowerCase()
         const title = e.title.toLowerCase()
-        const desc = e.description.toLowerCase()
+        const desc = (e.description ?? '').toLowerCase()
 
         // Exact slug match = highest score
         if (slug === kw || slug === kw.replace(/\s+/g, '-')) score += 100
@@ -167,7 +167,7 @@ export default async function handler(
     const results: SearchResult[] = unique.map(e => ({
       slug: e.slug,
       title: e.title,
-      description: e.description.slice(0, 200) + (e.description.length > 200 ? '…' : ''),
+      description: (e.description ?? '').slice(0, 200) + ((e.description ?? '').length > 200 ? '…' : ''),
       active: e.active,
       closed: e.closed,
       volume24hr: e.volume24hr,

@@ -50,9 +50,14 @@ async function probeLiveBook(
 async function findLiveToken(
   candidates: string[]
 ): Promise<string | null> {
-  for (const tokenId of candidates) {
-    const book = await probeLiveBook(tokenId)
-    if (book) return tokenId
+  const BATCH = 3
+  for (let i = 0; i < candidates.length; i += BATCH) {
+    const batch = candidates.slice(i, i + BATCH)
+    const results = await Promise.all(
+      batch.map(id => probeLiveBook(id).then(b => b ? id : null))
+    )
+    const found = results.find(r => r !== null)
+    if (found) return found
   }
   return null
 }
@@ -243,11 +248,18 @@ export default async function handler(
     }
 
     // Fetch orderbook, recent trades, and price history in parallel
-    const [book, trades, priceHistory] = await Promise.all([
+    const [bookRes, tradesRes, pricesRes] = await Promise.allSettled([
       polymarketAPI.getOrderBook(tokenId),
       polymarketAPI.getTrades({ market: tokenId, limit: 200 }),
       polymarketAPI.getPriceHistory({ tokenId, interval: '1d' }),
     ])
+
+    const book = bookRes.status === 'fulfilled' ? bookRes.value : null
+    if (!book) {
+      return res.status(503).json(createErrorResponse('Orderbook unavailable'))
+    }
+    const trades = tradesRes.status === 'fulfilled' ? tradesRes.value : []
+    const priceHistory = pricesRes.status === 'fulfilled' ? pricesRes.value : []
 
     // Get previous snapshot for change detection
     const snapshotKey = `ob-snapshot:${tokenId}`
