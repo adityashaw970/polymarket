@@ -36,6 +36,16 @@ function shortWallet(wallet: string): string {
   return `${wallet.slice(0, 6)}...${wallet.slice(-4)}`
 }
 
+function formatDisplayName(name: string | undefined): string {
+  if (!name) return 'Trader'
+  if (name.startsWith('0x') && name.length > 12) {
+    const parts = name.split('-')
+    const addr = parts[0]
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`
+  }
+  return name
+}
+
 export const SmartMoneyLeaderboard: React.FC<SmartMoneyLeaderboardProps> = ({
   traders,
   loading = false,
@@ -221,7 +231,7 @@ export const SmartMoneyLeaderboard: React.FC<SmartMoneyLeaderboardProps> = ({
 
       <div className="overflow-hidden rounded-3xl border border-white/10 bg-slate-950/70 shadow-2xl shadow-slate-950/40 backdrop-blur">
         <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-white/10">
+          <table className="min-w-full divide-y divide-white/10 table-fixed">
             <thead className="bg-white/5 text-left text-[11px] uppercase tracking-[0.24em] text-slate-400">
               <tr>
                 <th className="px-4 py-4 w-[8%]">Rank</th>
@@ -288,9 +298,21 @@ export const SmartMoneyLeaderboard: React.FC<SmartMoneyLeaderboardProps> = ({
                       <td className="px-4 py-4 text-sm font-semibold text-white">#{start + idx + 1}</td>
                       <td className="px-4 py-4">
                         <div className="flex min-w-0 flex-col gap-1">
-                          <span className="truncate text-sm font-semibold text-white">
-                            {trader.userDisplayName || trader.userUsername || 'Trader'}
-                          </span>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="truncate text-sm font-semibold text-white">
+                              {formatDisplayName(trader.userDisplayName || trader.userUsername)}
+                            </span>
+                            <a
+                              href={`https://polymarket.com/profile/${trader.proxyWallet}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title="Open on Polymarket"
+                              className="shrink-0 text-slate-500 hover:text-sky-300 transition text-[11px]"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              ↗
+                            </a>
+                          </div>
                           <span className="truncate font-mono text-[11px] text-slate-400">{shortWallet(trader.proxyWallet)}</span>
                         </div>
                       </td>

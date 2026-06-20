@@ -41,3 +41,18 @@ a {
   background: rgba(125, 211, 252, 0.35);
   color: white;
 }
+::-webkit-scrollbar {
+ width: 4px;
+}
+::-webkit-scrollbar-track {
+ border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+ background: transparent;
+ border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+ background: transparent;
+}

@@ -30,8 +30,10 @@ function statLabel(value: number, suffix = ''): string {
 }
 
 function shortLabel(value: string): string {
-  if (/^0x[a-fA-F0-9]{40}$/.test(value)) {
-    return `${value.slice(0, 6)}...${value.slice(-4)}`
+  if (value.startsWith('0x') && value.length > 12) {
+    const parts = value.split('-')
+    const addr = parts[0]
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`
   }
   return value
 }
@@ -79,6 +81,7 @@ export function ScoutDashboard() {
   const [selectedWallet, setSelectedWallet] = useState<string | null>(null)
   const [selectedTrader, setSelectedTrader] = useState<TraderActivityResponse | null>(null)
   const [traderLoading, setTraderLoading] = useState(false)
+  const [recentLimit, setRecentLimit] = useState(10)
 
   const fetchLeaderboard = useCallback(async () => {
     try {
@@ -211,14 +214,14 @@ export function ScoutDashboard() {
   const recentJoiners = traders
     .slice()
     .sort((a, b) => a.joinedDaysAgo - b.joinedDaysAgo)
-    .slice(0, 6)
+    .slice(0, recentLimit)
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-400 flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
       <section className="overflow-hidden rounded-4xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-slate-950/30 backdrop-blur md:p-8">
         <div className="grid gap-8 lg:grid-cols-[1.4fr_0.8fr]">
           <div className="space-y-5">
-            <div className=' w-full flex items-center justify-between'>
+            <div className=' w-full flex items-center justify-start gap-[2vw]'>
               <div className="inline-flex rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-sky-300">
               Polymarket scout
             </div>
@@ -295,10 +298,12 @@ export function ScoutDashboard() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[1.7fr_0.9fr]">
-        <SmartMoneyLeaderboard traders={traders} loading={loading} onTraderClick={(trader) => setSelectedWallet(trader.proxyWallet)} />
+      <div className="grid gap-6 xl:grid-cols-[1.7fr_0.9fr] w-full min-w-0">
+        <div className="min-w-0">
+          <SmartMoneyLeaderboard traders={traders} loading={loading} onTraderClick={(trader) => setSelectedWallet(trader.proxyWallet)} />
+        </div>
 
-        <div className="space-y-1">
+        <div className="space-y-1 min-w-0">
           <section className="rounded-4xl border border-white/10 bg-white/5 p-5 shadow-2xl shadow-slate-950/20 backdrop-blur">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -354,148 +359,13 @@ export function ScoutDashboard() {
             )}
           </section>
 
-          <section className="rounded-4xl border border-white/10 bg-white/5 p-5 shadow-2xl shadow-slate-950/20 backdrop-blur">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-xs uppercase tracking-[0.24em] text-slate-400">Event explorer</div>
-                <div className="mt-1 text-lg font-semibold text-white">Grouped outcome view</div>
-              </div>
-              <button
-                type="button"
-                onClick={fetchEventAnalysis}
-                disabled={eventLoading}
-                className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {eventLoading ? 'Analyzing...' : 'Analyze event'}
-              </button>
-            </div>
-
-            <div className="mt-4">
-              <input
-                value={eventSlug}
-                onChange={(event) => setEventSlug(event.target.value)}
-                placeholder="Enter a Polymarket event slug"
-                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-sky-400/60 focus:ring-2 focus:ring-sky-400/20"
-              />
-            </div>
-
-            {eventError && (
-              <div className="mt-4 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
-                {eventError}
-              </div>
-            )}
-
-            {eventData ? (
-              <div className="mt-5 space-y-4">
-                <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                  <div className="text-xl font-semibold text-white">{eventData.event.title}</div>
-                  <div className="mt-1 text-sm text-slate-300">{eventData.event.description}</div>
-                </div>
-
-                <div className="space-y-4">
-                  {eventData.outcomeMetrics.map((metric) => (
-                    <div key={metric.marketId} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-                        <div>
-                          <div className="text-sm font-semibold text-white">{metric.eventTitle}</div>
-                          <div className="text-xs text-slate-400">
-                            Outcome: {metric.outcome} - holders {statLabel(metric.totalHolders)}
-                          </div>
-                        </div>
-                        <div className="text-sm font-semibold text-sky-300">{metric.price.toFixed(3)}</div>
-                      </div>
-
-                      {/* Enriched Holders Table */}
-                      {metric.enrichedHolders && metric.enrichedHolders.length > 0 && (
-                        <div className="mt-4">
-                          <EventHolders
-                            holders={metric.enrichedHolders}
-                            marketTitle={metric.eventTitle}
-                          />
-                        </div>
-                      )}
-
-                      {/* Orderbook Analytics */}
-                      {metric.orderBookAnalytics && (
-                        <div className="mt-4">
-                          <OrderBookPanel
-                            tokenId={metric.orderBookAnalytics.tokenId}
-                            marketTitle={metric.eventTitle}
-                          />
-                        </div>
-                      )}
-
-                      <div className="mt-4 grid gap-4 md:grid-cols-2">
-                        <div>
-                          <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Top holders</div>
-                          <div className="mt-3 space-y-2">
-                            {metric.topHolders.slice(0, 4).map((holder) => (
-                              <div key={holder.proxyWallet} className="rounded-xl border border-white/10 bg-white/5 p-3">
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="min-w-0 truncate text-sm font-medium text-white">
-                                    {holder.userDisplayName || holder.userUsername || holder.proxyWallet.slice(0, 8)}
-                                  </span>
-                                  <span className="shrink-0 text-xs text-slate-400">{holder.outcome}</span>
-                                </div>
-                                <div className="mt-1 text-xs text-slate-400">
-                                  size {formatNumber(holder.size, 0)} - PnL {formatCurrency(holder.cashPnl)}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Smart-money traders</div>
-                          <div className="mt-3 space-y-2">
-                            {metric.smartMoneyHolders.slice(0, 4).map((holder) => (
-                              <div key={holder.wallet} className="rounded-xl border border-sky-400/15 bg-sky-400/5 p-3">
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="min-w-0 truncate text-sm font-medium text-white">
-                                    {holder.displayName || holder.username || holder.wallet.slice(0, 8)}
-                                  </span>
-                                  <span className="shrink-0 text-xs text-sky-300">{holder.smartMoneyScore}</span>
-                                </div>
-                                <div className="mt-1 text-xs text-slate-400">
-                                  {formatNumber(holder.position.size, 0)} shares at {holder.position.avgPrice.toFixed(3)}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                  <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Signals</div>
-                  <div className="mt-3 space-y-2">
-                    {eventData.smartMoneySignals.slice(0, 5).map((signal) => (
-                      <div key={`${signal.type}-${signal.timestamp}`} className="rounded-xl border border-white/10 bg-white/5 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-medium text-white">{signal.type}</span>
-                          <span className="text-xs text-slate-400">{(signal.confidence * 100).toFixed(0)}%</span>
-                        </div>
-                        <div className="mt-1 text-xs text-slate-400">{signal.description}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="mt-4 rounded-2xl border border-dashed border-white/15 bg-slate-950/40 p-6 text-sm text-slate-300">
-                Enter an event slug and click Analyze event to group its outcomes and see the top holders.
-              </div>
-            )}
-          </section>
         </div>
       </div>
 
       <section className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-4xl border border-white/10 bg-white/5 p-5 shadow-2xl shadow-slate-950/20 backdrop-blur">
           <div className="text-xs uppercase tracking-[0.24em] text-slate-400">Low prediction whales</div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
             {lowPredictionWhales.map((trader) => (
               <TraderCard key={trader.proxyWallet} trader={trader} onClick={(nextTrader) => setSelectedWallet(nextTrader.proxyWallet)} />
             ))}
@@ -503,8 +373,21 @@ export function ScoutDashboard() {
         </div>
 
         <div className="rounded-4xl border border-white/10 bg-white/5 p-5 shadow-2xl shadow-slate-950/20 backdrop-blur">
-          <div className="text-xs uppercase tracking-[0.24em] text-slate-400">Recent joiners</div>
-          <div className="mt-4 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="text-xs uppercase tracking-[0.24em] text-slate-400">Recent joiners</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-slate-500">Show:</span>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={recentLimit}
+                onChange={(e) => setRecentLimit(Math.max(1, parseInt(e.target.value) || 1))}
+                className="w-12 rounded-lg border border-white/10 bg-slate-950/60 px-1.5 py-0.5 text-center text-xs font-semibold text-white outline-none focus:border-sky-400"
+              />
+            </div>
+          </div>
+          <div className="mt-4 space-y-3 max-h-[47vw] overflow-y-auto pr-1">
             {recentJoiners.map((trader) => (
               <div key={trader.proxyWallet} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
                 <div className="flex items-center justify-between gap-3">

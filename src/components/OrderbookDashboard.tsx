@@ -710,7 +710,7 @@ function TopHoldersPanel({
                 <span className="text-[9px] uppercase tracking-wider text-slate-600">User</span>
                 <span className="text-[9px] uppercase tracking-wider text-slate-600 text-right">Shares</span>
                 <span className="text-[9px] uppercase tracking-wider text-slate-600 text-right">Avg Price</span>
-                <span className="text-[9px] uppercase tracking-wider text-slate-600 text-right">Unreal. PnL</span>
+                <span className="text-[9px] uppercase tracking-wider text-slate-600 text-right">Profit / Loss</span>
                 <span className="text-[9px] uppercase tracking-wider text-violet-400/70 text-right">Predictions</span>
                 <span className="text-[9px] uppercase tracking-wider text-violet-400/70 text-right">Joined</span>
               </div>
