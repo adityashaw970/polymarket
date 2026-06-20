@@ -250,7 +250,7 @@ export default async function handler(
               joinedAt,
               joinedDaysAgo: daysAgo(joinedAt),
             }
-            const estimatedPositionValue = holder.size * (getHolderOutcomePrice(holder.outcome) || holder.currentPrice)
+            const livePrice = getHolderOutcomePrice(holder.outcome) || holder.currentPrice
             const syntheticPositions: UserPosition[] = [{
               proxyWallet: holder.proxyWallet,
               conditionId: market.conditionId || market.id,
@@ -259,14 +259,15 @@ export default async function handler(
               outcome: holder.outcome,
               size: holder.size,
               avgPrice: holder.averagePrice,
-              price: getHolderOutcomePrice(holder.outcome) || holder.currentPrice,
+              price: livePrice,
               cashPnl: holder.cashPnl,
-              percentPnl: 0,
+              percentPnl: holder.percentPnl,
               initialValue: holder.size * holder.averagePrice,
-              currentValue: estimatedPositionValue,
+              currentValue: holder.size * livePrice,
               redeemable: false,
               mergeable: false,
               resolveTime: market.endDate,
+              asset: undefined,
             }]
 
             const score = SmartMoneyScorer.calculateSmartMoneyScore(leaderboardLikeTrader, traderTrades, syntheticPositions)
@@ -312,7 +313,7 @@ export default async function handler(
                 new Promise<CLOBPrice[]>(resolve => setTimeout(() => resolve([]), 3_000)),
               ]),
             ])
-            if (bookRes.status === 'rejected') throw new Error('book unavailable')
+            if (bookRes.status === 'rejected') throw new Error('book fetch failed')
             const book = bookRes.value
             const marketTrades = tradesRes.status === 'fulfilled' ? tradesRes.value : []
             const priceHistory = pricesRes.status === 'fulfilled' ? pricesRes.value : []

@@ -74,6 +74,14 @@ export default async function handler(
       return res.status(200).json(createSuccessResponse(cachedResult))
     }
 
+    const timePeriodLower = String(query.timePeriod || '30d').toLowerCase()
+    const periodMs = timePeriodLower === '1d' || timePeriodLower === 'day' ? 86_400_000
+      : timePeriodLower === '7d' || timePeriodLower === 'week' ? 7 * 86_400_000
+      : timePeriodLower === '30d' || timePeriodLower === 'month' ? 30 * 86_400_000
+      : timePeriodLower === '90d' ? 90 * 86_400_000
+      : null
+    const startTs = periodMs ? Math.floor((Date.now() - periodMs) / 1000) : undefined
+
     // Fetch 2 pages (100 users) — ample for a useful leaderboard without excessive API calls
     const FETCH_USERS = 100
     const leaderboardResult: LeaderboardUser[] = []
@@ -104,8 +112,8 @@ export default async function handler(
         const profileCacheKey = CacheKeys.profile(user.proxyWallet)
         let cachedProfile = cache.get<UserProfile>(profileCacheKey)
 
-        const [trades, positions, tradedCount, earliestActivity, redemptions, freshProfile] = await Promise.all([
-          polymarketAPI.getTrades({ user: user.proxyWallet, limit: 200 }),
+        const [tradesRes, posRes, countRes, actRes, redemptRes, profileRes] = await Promise.allSettled([
+          polymarketAPI.getTrades({ user: user.proxyWallet, limit: 200, start: startTs }),
           polymarketAPI.getPositions({ user: user.proxyWallet, limit: 100 }),
           polymarketAPI.getTradedCount(user.proxyWallet),
           // Cheap — only needs the single earliest row, for joinedAt
@@ -116,6 +124,13 @@ export default async function handler(
           polymarketAPI.getActivity({ user: user.proxyWallet, type: 'REDEEM', limit: 500, sortBy: 'timestamp', sortDirection: 'desc' }),
           cachedProfile ? Promise.resolve(null) : polymarketAPI.getProfile(user.proxyWallet),
         ])
+
+        const trades = tradesRes.status === 'fulfilled' ? tradesRes.value : []
+        const positions = posRes.status === 'fulfilled' ? posRes.value : []
+        const tradedCount = countRes.status === 'fulfilled' ? countRes.value : 0
+        const earliestActivity = actRes.status === 'fulfilled' ? actRes.value : []
+        const redemptions = redemptRes.status === 'fulfilled' ? redemptRes.value : []
+        const freshProfile = profileRes.status === 'fulfilled' ? profileRes.value : null
 
         if (!cachedProfile && freshProfile) {
           cachedProfile = freshProfile

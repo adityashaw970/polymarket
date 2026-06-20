@@ -813,6 +813,7 @@ export class PolymarketAPI {
       bids,
       asks,
       timestamp: toMsTimestamp(payload.timestamp),
+      conditionId: typeof payload.market === 'string' ? payload.market : undefined,
     }
   }
 

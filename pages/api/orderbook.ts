@@ -247,10 +247,14 @@ export default async function handler(
       )
     }
 
+    const queryConditionId = req.query.conditionId as string | undefined
+
     // Fetch orderbook, recent trades, and price history in parallel
     const [bookRes, tradesRes, pricesRes] = await Promise.allSettled([
       polymarketAPI.getOrderBook(tokenId),
-      polymarketAPI.getTrades({ market: tokenId, limit: 200 }),
+      queryConditionId
+        ? polymarketAPI.getTrades({ market: queryConditionId, limit: 200 })
+        : Promise.resolve([]),
       polymarketAPI.getPriceHistory({ tokenId, interval: '1d' }),
     ])
 
@@ -258,8 +262,13 @@ export default async function handler(
     if (!book) {
       return res.status(503).json(createErrorResponse('Orderbook unavailable'))
     }
-    const trades = tradesRes.status === 'fulfilled' ? tradesRes.value : []
+    let trades = tradesRes.status === 'fulfilled' ? tradesRes.value : []
     const priceHistory = pricesRes.status === 'fulfilled' ? pricesRes.value : []
+
+    // Fallback: fetch trades using derived condition ID from book if not query-provided
+    if (trades.length === 0 && book.conditionId) {
+      trades = await polymarketAPI.getTrades({ market: book.conditionId, limit: 200 }).catch(() => [])
+    }
 
     // Get previous snapshot for change detection
     const snapshotKey = `ob-snapshot:${tokenId}`

@@ -364,8 +364,8 @@ function groupAnalytics(a: OrderBookAnalytics, book: OrderBook): OrderBookAnalyt
 async function analyzeMarket(market: GammaMarket): Promise<TokenOrderbook[]> {
   if (!market.clobTokenIds || market.clobTokenIds.length === 0) return []
 
-  const results = await Promise.all(
-    market.clobTokenIds.map(async (tokenId, idx) => {
+  return pLimit(
+    market.clobTokenIds.map((tokenId, idx) => async () => {
       const snapshotKey = `ob-snapshot:${tokenId}`
       const previousSnapshot = cache.get<ReturnType<typeof createOrderBookSnapshot>>(snapshotKey)
 
@@ -395,9 +395,9 @@ async function analyzeMarket(market: GammaMarket): Promise<TokenOrderbook[]> {
         raw,
         grouped,
       }
-    })
-  )
-  return results.filter((r): r is TokenOrderbook => r !== null)
+    }),
+    3
+  ).then(results => results.filter((r): r is TokenOrderbook => r !== null))
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────

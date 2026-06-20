@@ -302,6 +302,7 @@ export interface OrderBook {
   bids: PriceLevel[];
   asks: PriceLevel[];
   timestamp: number;
+  conditionId?: string;
 }
 
 export interface PriceLevel {

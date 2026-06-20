@@ -353,10 +353,7 @@ function calcSellSlippage(bids: AnyLevel[], orderSizeUsd: number): number {
   return Math.max(0, ((bestBid - avgFillPrice) / bestBid) * 100)
 }
 
-// Legacy alias (kept for backward compatibility)
-function calcExpectedSlippage(levels: AnyLevel[], orderSizeUsd: number): number {
-  return calcBuySlippage(levels, orderSizeUsd)
-}
+
 
 function calcNetOrderFlow(trades: UserTrade[]): {
   netFlow: number
