@@ -268,7 +268,7 @@ function normalizeActivity(row: RawActivity): UserActivity {
   return {
     proxyWallet: row.proxyWallet || '',
     userUsername: row.pseudonym,
-    timestamp: toNumber(row.timestamp),
+    timestamp: toMsTimestamp(row.timestamp),
     type: row.type || 'TRADE',
     conditionId: row.conditionId || '',
     marketTitle: row.title || row.slug || 'Unknown market',
@@ -682,6 +682,16 @@ export class PolymarketAPI {
     return normalizeArray<RawActivity>(payload).map(normalizeActivity)
   }
 
+  async getTradedCount(user: string): Promise<number> {
+    if (!isValidWallet(user)) {
+      throw new Error('Invalid wallet address')
+    }
+    await this.dataLimiter.wait()
+    const url = buildUrl(API_ENDPOINTS.DATA_API, '/traded', { user })
+    const payload = await this.requestJson<{ traded?: number }>(url)
+    return toNumber(payload?.traded)
+  }
+
   async getLeaderboard(params?: {
     limit?: number
     offset?: number
@@ -802,43 +812,30 @@ export class PolymarketAPI {
 
   async getProfile(address: string): Promise<UserProfile | null> {
     try {
-      const response = await fetch(`https://polymarket.com/api/profile/${address}`, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': 'https://polymarket.com/',
-          'Accept': 'application/json',
-        }
-      })
+      const url = buildUrl(API_ENDPOINTS.GAMMA_API, '/public-profile', { address })
+      const response = await fetch(url, { headers: { Accept: 'application/json' } })
       if (!response.ok) return null
       const data = await response.json() as Record<string, unknown>
+      if (!data || typeof data !== 'object') return null
 
-      // The profile API may return nested or flat structures
-      const profile = (data && typeof data === 'object' && 'profile' in data)
-        ? data.profile as Record<string, unknown>
-        : data
-
-      if (!profile || typeof profile !== 'object') return null
-
-      const createdAtRaw = profile.createdAt || profile.created_at || profile.joinDate
       let createdAt = 0
-      if (typeof createdAtRaw === 'string') {
-        const parsed = new Date(createdAtRaw).getTime()
+      if (typeof data.createdAt === 'string') {
+        const parsed = new Date(data.createdAt).getTime()
         if (Number.isFinite(parsed) && parsed > 0) createdAt = parsed
-      } else if (typeof createdAtRaw === 'number') {
-        createdAt = createdAtRaw < 1_000_000_000_000 ? createdAtRaw * 1000 : createdAtRaw
       }
 
       return {
         address,
-        username: (profile.username || profile.pseudonym || profile.name) as string | undefined,
-        displayName: (profile.displayName || profile.name || profile.pseudonym) as string | undefined,
-        profileImage: (profile.profileImage || profile.profileImageOptimized || profile.avatar) as string | undefined,
-        bio: (profile.bio || profile.description) as string | undefined,
+        username: (data.pseudonym || data.name) as string | undefined,
+        displayName: (data.name || data.pseudonym) as string | undefined,
+        profileImage: data.profileImage as string | undefined,
+        bio: data.bio as string | undefined,
         createdAt,
-        positionsValue: toNumber(profile.positionsValue ?? profile.positions_value),
-        volume: toNumber(profile.volume ?? profile.totalVolume),
-        pnl: toNumber(profile.pnl ?? profile.profit),
-        predictions: toNumber(profile.predictions ?? profile.marketsTraded ?? profile.markets_traded),
+        // Not exposed by the official /public-profile endpoint
+        positionsValue: 0,
+        volume: 0,
+        pnl: 0,
+        predictions: 0,
       }
     } catch {
       return null

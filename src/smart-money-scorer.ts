@@ -1,3 +1,4 @@
+//smart-money-scorer.ts
 import {
   SmartMoneyTrader,
   SmartMoneyScore,

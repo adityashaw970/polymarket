@@ -3,6 +3,7 @@ import {
   LeaderboardUser,
   UserTrade,
   UserPosition,
+  UserActivity,
 } from './types';
 
 // ============================================================================
@@ -68,33 +69,48 @@ export function formatDaysAgo(days: number): string {
 // CALCULATION UTILITIES
 // ============================================================================
 
-export function calculateWinRate(trades: UserTrade[]): number {
-  if (trades.length === 0) return 0;
-
-  // Group trades by market to determine if profitable
+export function calculateWinRate(
+  trades: UserTrade[],
+  redemptions: UserActivity[] = [],
+  openPositions: UserPosition[] = []
+): number {
   const tradesByMarket = new Map<string, UserTrade[]>();
   trades.forEach((t) => {
-    if (!tradesByMarket.has(t.marketId)) {
-      tradesByMarket.set(t.marketId, []);
-    }
+    if (!tradesByMarket.has(t.marketId)) tradesByMarket.set(t.marketId, []);
     tradesByMarket.get(t.marketId)!.push(t);
   });
 
-  let winCount = 0;
-  tradesByMarket.forEach((marketTrades) => {
-    const buyCost = marketTrades
-      .filter((t) => t.side === 'BUY')
-      .reduce((sum, t) => sum + t.totalCost, 0);
-    const sellRevenue = marketTrades
-      .filter((t) => t.side === 'SELL')
-      .reduce((sum, t) => sum + t.totalCost, 0);
-
-    if (sellRevenue > buyCost) {
-      winCount++;
-    }
+  const redeemedByMarket = new Map<string, number>();
+  redemptions.forEach((r) => {
+    redeemedByMarket.set(r.conditionId, (redeemedByMarket.get(r.conditionId) ?? 0) + r.cashChanged);
   });
 
-  return winCount / tradesByMarket.size;
+  // Shares still held haven't been sold or redeemed — use their live
+  // mark-to-market value as the "exit value" for that portion of the bet
+  const openValueByMarket = new Map<string, number>();
+  openPositions.forEach((p) => {
+    openValueByMarket.set(p.marketId, (openValueByMarket.get(p.marketId) ?? 0) + p.currentValue);
+  });
+
+  const allMarkets = new Set([
+    ...tradesByMarket.keys(),
+    ...redeemedByMarket.keys(),
+    ...openValueByMarket.keys(),
+  ]);
+  if (allMarkets.size === 0) return 0;
+
+  let winCount = 0;
+  allMarkets.forEach((marketId) => {
+    const marketTrades = tradesByMarket.get(marketId) ?? [];
+    const buyCost = marketTrades.filter((t) => t.side === 'BUY').reduce((sum, t) => sum + t.totalCost, 0);
+    const sellRevenue = marketTrades.filter((t) => t.side === 'SELL').reduce((sum, t) => sum + t.totalCost, 0);
+    const redeemRevenue = redeemedByMarket.get(marketId) ?? 0;
+    const openValue = openValueByMarket.get(marketId) ?? 0;
+
+    if (sellRevenue + redeemRevenue + openValue > buyCost) winCount++;
+  });
+
+  return winCount / allMarkets.size;
 }
 
 export function calculateProfitPerPrediction(pnl: number, predictionsCount: number): number {
@@ -279,8 +295,13 @@ export function createErrorResponse(error: string, timestamp: number = Date.now(
 // AGGREGATION UTILITIES
 // ============================================================================
 
-export function aggregateTraderMetrics(trader: LeaderboardUser, trades: UserTrade[], positions: UserPosition[]) {
-  const winRate = calculateWinRate(trades);
+export function aggregateTraderMetrics(
+  trader: LeaderboardUser,
+  trades: UserTrade[],
+  positions: UserPosition[],
+  redemptions: UserActivity[] = []
+) {
+  const winRate = calculateWinRate(trades, redemptions, positions);
   const predictionCount = Math.max(1, new Set(trades.map((trade) => trade.marketId)).size || trader.predictionsCount);
   const profitPerPrediction = calculateProfitPerPrediction(trader.pnl, predictionCount);
 

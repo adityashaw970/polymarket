@@ -102,30 +102,37 @@ export default async function handler(
       async (user) => {
         // Use cached profile if available — no blocking profile fetch per user
         const profileCacheKey = CacheKeys.profile(user.proxyWallet)
-        const cachedProfile = cache.get<UserProfile>(profileCacheKey)
+        let cachedProfile = cache.get<UserProfile>(profileCacheKey)
 
-        // Fire trades + positions in parallel; reduce limit to 200 for speed
-        const [trades, positions] = await Promise.all([
-          polymarketAPI.getTrades({
-            user: user.proxyWallet,
-            limit: 200,
-          }),
-          polymarketAPI.getPositions({
-            user: user.proxyWallet,
-            limit: 100,
-          }),
+        const [trades, positions, tradedCount, earliestActivity, redemptions, freshProfile] = await Promise.all([
+          polymarketAPI.getTrades({ user: user.proxyWallet, limit: 200 }),
+          polymarketAPI.getPositions({ user: user.proxyWallet, limit: 100 }),
+          polymarketAPI.getTradedCount(user.proxyWallet),
+          // Cheap — only needs the single earliest row, for joinedAt
+          polymarketAPI.getActivity({ user: user.proxyWallet, limit: 1, sortBy: 'timestamp', sortDirection: 'asc' }),
+          // Server-side filtered to REDEEM only — so whales with thousands of
+          // MAKER_REBATE/REWARD rows don't bury their actual redemptions before
+          // a generic limit cuts off
+          polymarketAPI.getActivity({ user: user.proxyWallet, type: 'REDEEM', limit: 500, sortBy: 'timestamp', sortDirection: 'desc' }),
+          cachedProfile ? Promise.resolve(null) : polymarketAPI.getProfile(user.proxyWallet),
         ])
 
-        const predictionMarkets = new Set(trades.map((trade) => trade.marketId))
-        const predictionsCount = predictionMarkets.size || trades.length
+        if (!cachedProfile && freshProfile) {
+          cachedProfile = freshProfile
+          cache.set(profileCacheKey, freshProfile, 5 * 60 * 1000)
+        }
 
-        // Derive join date from earliest trade already fetched — avoids extra API call
+        const predictionsCount = tradedCount || trades.length
+        // redemptions is already type-filtered server-side now
+
         const joinedAt =
           (cachedProfile?.createdAt && cachedProfile.createdAt > 0)
             ? cachedProfile.createdAt
-            : trades.length > 0
-              ? Math.min(...trades.map((t) => t.timestamp))
-              : Date.now()
+            : earliestActivity.length > 0
+              ? earliestActivity[0].timestamp
+              : trades.length > 0
+                ? Math.min(...trades.map((t) => t.timestamp))
+                : Date.now()
 
         const joinedDaysAgo = daysAgo(joinedAt)
         const largestTrade = trades.length > 0 ? Math.max(...trades.map((trade) => trade.totalCost)) : 0
@@ -137,7 +144,7 @@ export default async function handler(
           joinedDaysAgo,
         }
 
-        const metrics = aggregateTraderMetrics(scoringUser, trades, positions)
+        const metrics = aggregateTraderMetrics(scoringUser, trades, positions, redemptions)
         const score = SmartMoneyScorer.calculateSmartMoneyScore(scoringUser, trades, positions)
 
         const highConvictionMarkets = new Set(
